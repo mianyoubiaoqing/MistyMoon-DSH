@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/foundation" },
+    { "path": "./packages/installer" },
+    { "path": "./packages/memory" }
+    ,{ "path": "./packages/settings-ui" }
+  ]
+}

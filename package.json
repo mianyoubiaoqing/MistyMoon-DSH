@@ -1,0 +1,110 @@
+{
+  "name": "@mistymoon/dsh",
+  "version": "0.0.1-rc1",
+  "description": "Long-term companion plugin suite for DeepSeek Harness",
+  "type": "module",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "packages/settings-ui/lib",
+    "packages/foundation/lib",
+    "packages/foundation/personas/template/persona.json",
+    "packages/foundation/personas/example/persona.json",
+    "packages/memory/lib"
+  ],
+  "exports": {
+    ".": {
+      "types": "./packages/settings-ui/lib/types/index.d.ts",
+      "default": "./packages/settings-ui/lib/index.js"
+    },
+    "./client": {
+      "types": "./packages/settings-ui/lib/types/client/index.d.ts",
+      "default": "./packages/settings-ui/lib/client.js"
+    },
+    "./foundation": {
+      "types": "./packages/foundation/lib/index.d.ts",
+      "default": "./packages/foundation/lib/index.js"
+    },
+    "./memory": {
+      "types": "./packages/memory/lib/index.d.ts",
+      "default": "./packages/memory/lib/index.js"
+    },
+    "./memory/legacy-migration": {
+      "types": "./packages/memory/lib/legacy-migration.d.ts",
+      "default": "./packages/memory/lib/legacy-migration.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ],
+      "platform": "web"
+    }
+  },
+  "packageManager": "pnpm@11.7.0",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "audit:publication": "tsx scripts/audit-publication.ts",
+    "build": "pnpm --filter @mistymoon/dsh-foundation run build && pnpm --filter @mistymoon/dsh-memory run build && pnpm --filter @mistymoon/dsh-settings-ui run build",
+    "preview:dump": "tsx scripts/preview.ts dump",
+    "preview:install": "tsx scripts/preview.ts install",
+    "preview:migrate-memory": "tsx scripts/migrate-memory.ts",
+    "preview:smoke": "tsx scripts/preview.ts smoke",
+    "preview:start": "tsx scripts/preview.ts start",
+    "prepare": "pnpm run build",
+    "prepack": "pnpm run build && pnpm run audit:publication",
+    "smoke:built": "node scripts/smoke-built.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc -b",
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run smoke:built && pnpm run audit:publication"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "3.18.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5 <0.1.0"
+    ,"@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.5 <0.1.0"
+    ,"@deepseek-ai/dsh-client-locale": ">=0.1.0-rc.5 <0.1.0"
+    ,"@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.5 <0.1.0"
+    ,"@deepseek-ai/dsh-client-ui-settings": ">=0.1.0-rc.5 <0.1.0"
+    ,"@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.5 <0.1.0"
+    ,"react": "^18.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-connection": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-locale": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.6",
+    "@types/react": "18.3.31",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.20.0",
+    "js-yaml": "^4.2.0",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
+    "react": "18.3.1",
+    "tsdown": "0.22.2",
+    "vitest": "^4.1.8"
+  }
+}

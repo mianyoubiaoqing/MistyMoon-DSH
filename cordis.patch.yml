@@ -1,0 +1,17 @@
+- insert:
+    - id: mistymoon-foundation
+      name: '@mistymoon/dsh/foundation'
+      config:
+        home: !!js dshHomePath('mistymoon')
+
+    - id: mistymoon-settings-ui
+      name: '@mistymoon/dsh'
+      config:
+        home: !!js dshHomePath('mistymoon')
+
+    - id: mistymoon-memory
+      name: '@mistymoon/dsh/memory'
+      config:
+        path: !!js dshHomePath('mistymoon', 'memory', 'memories.jsonl')
+        recallLimit: 8
+        settingsPath: !!js dshHomePath('mistymoon', 'settings', 'settings.json')
