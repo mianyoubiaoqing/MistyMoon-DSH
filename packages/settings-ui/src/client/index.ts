@@ -5,7 +5,8 @@ import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { MemoryCandidate } from '@mistymoon/dsh-memory'
-import type { MistyMoonSettingsSnapshot } from '../index.js'
+import type { CharacterCardPersonaMapping } from '@mistymoon/dsh-foundation/character-card'
+import type { MistyMoonCharacterCardPreview, MistyMoonSettingsSnapshot } from '../index.js'
 import { MistyMoonSettingsTab, type MistyMoonSettingsTabInjected } from './MistyMoonSettingsTab.js'
 import { en, zh, type MistyMoonSettingsLocaleKey } from './locales.js'
 
@@ -31,7 +32,9 @@ const CSS = `
 .mistymoon-settings input,.mistymoon-settings textarea{box-sizing:border-box;width:100%;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;border-radius:8px;padding:8px 10px;outline:none}
 .mistymoon-settings input:focus-visible,.mistymoon-settings textarea:focus-visible{border-color:var(--dsw-alias-state-business-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-state-business-primary) 18%,transparent)}
 .mistymoon-settings textarea{resize:vertical;line-height:20px}.mistymoon-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.mistymoon-settings .mistymoon-check{flex-direction:row;align-items:center;font-weight:400}.mistymoon-check input{width:16px;height:16px;margin:0}
-.mistymoon-actions{display:flex;justify-content:flex-end}.mistymoon-actions button,.mistymoon-error button{border:0;background:var(--dsw-alias-state-business-primary);color:#fff;font:inherit;border-radius:8px;padding:8px 16px;cursor:pointer}.mistymoon-actions button:disabled{opacity:.5;cursor:not-allowed}
+.mistymoon-actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end}.mistymoon-actions button,.mistymoon-error button{border:0;background:var(--dsw-alias-state-business-primary);color:#fff;font:inherit;border-radius:8px;padding:8px 16px;cursor:pointer}.mistymoon-actions button:disabled{opacity:.5;cursor:not-allowed}.mistymoon-actions .mistymoon-secondary{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2)}
+.mistymoon-preview{white-space:pre-wrap;max-height:240px;overflow:auto;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:10px;font-size:12px;line-height:18px}.mistymoon-version{display:flex;align-items:center;justify-content:space-between;gap:10px}.mistymoon-version button{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);border-radius:7px;padding:5px 10px;cursor:pointer}
+.mistymoon-import{display:flex;flex-direction:column;gap:10px}.mistymoon-import-meta{display:flex;flex-wrap:wrap;gap:8px}.mistymoon-import-meta span{background:var(--dsw-alias-bg-layer-1);border-radius:999px;padding:3px 8px;font-size:12px}.mistymoon-import-warnings{margin:0;padding-left:20px;color:var(--dsw-alias-state-warning-primary);font-size:13px}.mistymoon-settings select{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;border-radius:8px;padding:8px 10px}
 .mistymoon-review{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:12px}.mistymoon-review h4,.mistymoon-review p{margin:0}.mistymoon-review>div>p,.mistymoon-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}.mistymoon-candidate{display:flex;flex-direction:column;gap:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);border-radius:8px;padding:12px}.mistymoon-candidate>p{font-size:14px;line-height:21px}.mistymoon-candidate-actions{display:flex;gap:8px;justify-content:flex-end}.mistymoon-candidate-actions button{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;border-radius:7px;padding:6px 12px;cursor:pointer}.mistymoon-candidate-actions button:first-child{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary)}.mistymoon-candidate-actions button:disabled{opacity:.5;cursor:not-allowed}
 .mistymoon-validation,.mistymoon-error{color:var(--dsw-alias-state-error-primary);font-size:13px}.mistymoon-success{color:var(--dsw-alias-state-success-primary);font-size:13px}.mistymoon-error{display:flex;align-items:center;gap:10px}
 @media (max-width:680px){.mistymoon-grid{grid-template-columns:minmax(0,1fr)}}`
@@ -63,6 +66,19 @@ function candidateList(value: unknown): MemoryCandidate[] {
   return value as MemoryCandidate[]
 }
 
+function characterCardPreview(value: unknown): MistyMoonCharacterCardPreview {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('invalid Character Card preview')
+  const record = value as Record<string, unknown>
+  if (typeof record.source !== 'object' || record.source === null
+    || typeof record.draft !== 'object' || record.draft === null
+    || typeof record.mapping !== 'object' || record.mapping === null
+    || typeof record.persona !== 'object' || record.persona === null
+    || !Array.isArray(record.warnings) || record.warnings.some(item => typeof item !== 'string')) {
+    throw new Error('invalid Character Card preview')
+  }
+  return value as MistyMoonCharacterCardPreview
+}
+
 /** Register the MistyMoon tab in the Plugins settings section. */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'mistymoon-settings-ui: dictionaries')
@@ -78,7 +94,7 @@ export function apply(ctx: ClientContext): void {
   // merging therefore exposes the Host connection type here even though this
   // entry only runs in the browser module graph.
   const connection = ctx.get('connection') as unknown as ConnectionHandle
-  const call = async (endpoint: 'read' | 'save', payload: unknown): Promise<MistyMoonSettingsSnapshot> => {
+  const call = async (endpoint: 'read' | 'save' | 'persona-publish' | 'persona-discard' | 'persona-rollback', payload: unknown): Promise<MistyMoonSettingsSnapshot> => {
     const result = await connection.rpc.call('/mistymoon-settings', endpoint, payload)
     if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
     return snapshot(result.value)
@@ -95,9 +111,43 @@ export function apply(ctx: ClientContext): void {
     })
     if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
   }
+  const cardPayload = (fileName: string, contentBase64: string, mapping: CharacterCardPersonaMapping) => ({
+    fileName, contentBase64, mapping,
+  })
+  const previewCharacterCard = async (
+    fileName: string,
+    contentBase64: string,
+    mapping: CharacterCardPersonaMapping,
+  ): Promise<MistyMoonCharacterCardPreview> => {
+    const result = await connection.rpc.call(
+      '/mistymoon-settings',
+      'character-card-preview',
+      cardPayload(fileName, contentBase64, mapping),
+    )
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+    return characterCardPreview(result.value)
+  }
+  const applyCharacterCard = async (
+    fileName: string,
+    contentBase64: string,
+    mapping: CharacterCardPersonaMapping,
+  ): Promise<MistyMoonSettingsSnapshot> => {
+    const result = await connection.rpc.call(
+      '/mistymoon-settings',
+      'character-card-apply',
+      cardPayload(fileName, contentBase64, mapping),
+    )
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+    return snapshot(result.value)
+  }
   const injected: MistyMoonSettingsTabInjected = {
     read: () => call('read', {}),
-    save: settings => call('save', { settings }),
+    save: settings => call('save', { settings: { persona: settings.persona, recallLimit: settings.recallLimit } }),
+    publishPersona: () => call('persona-publish', {}),
+    discardPersona: () => call('persona-discard', {}),
+    rollbackPersona: versionId => call('persona-rollback', { versionId }),
+    previewCharacterCard,
+    applyCharacterCard,
     listCandidates: callCandidates,
     approveCandidate: candidateId => decideCandidate('candidate-approve', candidateId),
     rejectCandidate: candidateId => decideCandidate('candidate-reject', candidateId),

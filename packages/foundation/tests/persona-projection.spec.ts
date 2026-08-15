@@ -1,13 +1,21 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Context } from '@deepseek-ai/cordis'
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
+import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
-import * as Foundation from '../src/index.js'
-import { loadPersona, renderPersona } from '../src/index.js'
+import {
+  loadPersona,
+  projectRoleplay,
+  renderPersona,
+  renderRoleplaySnapshot,
+  RoleplayController,
+  type PersonaDocument,
+} from '../src/index.js'
 
-const OWNER_PERSONA = {
+const OWNER_PERSONA: PersonaDocument = {
   schemaVersion: 2,
   kind: 'mistymoon.persona',
   displayName: 'Luna',
@@ -33,7 +41,7 @@ const OWNER_PERSONA = {
     privateByDefault: true,
     requireApprovalForExternalActions: true,
   },
-} as const
+}
 
 describe('private persona projection', () => {
   it('validates and renders a deterministic model-facing persona', async () => {
@@ -81,21 +89,99 @@ describe('private persona projection', () => {
     expect(persona.referenceDialogs).toEqual([])
   })
 
-  it('replaces the DSH persona slot for scoped assemblies and restores it on unload', async () => {
-    const privateHome = await mkdtemp(join(tmpdir(), 'mistymoon-persona-plugin-'))
-    const personaDirectory = join(privateHome, 'persona')
-    await mkdir(personaDirectory)
-    await writeFile(join(personaDirectory, 'persona.json'), `${JSON.stringify(OWNER_PERSONA)}\n`, 'utf8')
+  it('leaves a complete minimal system prompt unchanged', async () => {
     const ctx = new Context()
-    await ctx.plugin(SystemPrompt, { persona: 'You are a coding agent.' })
+    await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, persona: 'You are a coding agent.' })
+    ctx.systemPrompt.section({ name: 'preset:minimal', order: 10, text: 'Exact coding prompt.', complete: true })
 
-    const fiber = await ctx.plugin(Foundation, { home: privateHome })
-    const projected = renderPrompt(await ctx.systemPrompt.assemble())
+    expect(renderPrompt(await ctx.systemPrompt.assemble())).toBe('Exact coding prompt.')
+  })
 
-    expect(projected).toContain('You are Luna.')
-    expect(projected).not.toContain('You are a coding agent.')
+  it('inserts companion context immediately before the owner message', () => {
+    const owner = createUserMessage({
+      content: [{ type: 'text', text: 'Fix the failing TypeScript test.' }],
+      source: { kind: 'user' },
+    })
+    const decision: PreStepDecision = { kind: 'enter', messages: [owner] }
 
-    await fiber.dispose()
-    expect(renderPrompt(await ctx.systemPrompt.assemble())).toContain('You are a coding agent.')
+    const projected = projectRoleplay(decision, OWNER_PERSONA, 'companion')
+
+    expect(projected.kind).toBe('enter')
+    if (projected.kind === 'reject') throw new Error('unexpected rejection')
+    expect(projected.messages).toHaveLength(2)
+    expect(projected.messages[0]?.source).toMatchObject({
+      kind: 'plugin',
+      plugin: 'mistymoon-foundation',
+      form: 'snapshot',
+    })
+    expect(projected.messages[0]?.content).toEqual([expect.objectContaining({
+      type: 'text',
+      text: expect.stringContaining('Do not turn code, commands, plans, diagnostics, or technical decisions into roleplay.'),
+    })])
+    expect(projected.messages[1]).toBe(owner)
+  })
+
+  it('keeps RP selection durable per session without changing DSH settings', () => {
+    const events: Array<Record<string, unknown>> = []
+    const session = {
+      events,
+      append(type: string, data: unknown) {
+        events.push({ type, data, seq: events.length, time: Date.now() })
+      },
+    }
+    const agent = { session } as unknown as Agent
+    const controller = new RoleplayController('companion')
+
+    expect(controller.get(agent)).toEqual({ mode: 'companion' })
+    events.push({
+      type: 'command/run',
+      data: { commandId: 'test-command', name: 'rp', args: ' off', source: { kind: 'user' } },
+      seq: 0,
+      time: Date.now(),
+    })
+    expect(controller.get(agent)).toEqual({ mode: 'off' })
+    expect(session.events.at(-1)).toMatchObject({ type: 'command/run', data: { name: 'rp', args: ' off' } })
+  })
+
+  it('does not project context when RP is off or an initial step has no owner message', () => {
+    const owner = createUserMessage({ content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } })
+    const ownerDecision: PreStepDecision = { kind: 'enter', messages: [owner] }
+    const continuation: PreStepDecision = { kind: 'enter', messages: [] }
+
+    expect(projectRoleplay(ownerDecision, OWNER_PERSONA, 'off')).toBe(ownerDecision)
+    expect(projectRoleplay(continuation, OWNER_PERSONA, 'immersive')).toBe(continuation)
+  })
+
+  it('repeats a compact voice reminder on continuation steps without the full immersive persona', () => {
+    const continuation: PreStepDecision = { kind: 'enter', messages: [] }
+
+    const projected = projectRoleplay(continuation, OWNER_PERSONA, 'immersive', 2)
+
+    expect(projected.kind).toBe('enter')
+    if (projected.kind === 'reject') throw new Error('unexpected rejection')
+    expect(projected.messages).toHaveLength(1)
+    expect(projected.messages[0]?.source).toMatchObject({
+      kind: 'plugin',
+      plugin: 'mistymoon-foundation',
+      form: 'snapshot',
+      summary: 'MistyMoon RP continuation: immersive',
+    })
+    expect(projected.messages[0]?.content).toEqual([expect.objectContaining({
+      type: 'text',
+      text: expect.stringContaining('When producing owner-facing prose, keep Luna'),
+    })])
+    expect(projected.messages[0]?.content).toEqual([expect.objectContaining({
+      type: 'text',
+      text: expect.not.stringContaining('Example 1 Luna:'),
+    })])
+  })
+
+  it('uses the full private persona only in immersive presentation', () => {
+    const companion = renderRoleplaySnapshot(OWNER_PERSONA, 'companion')
+    const immersive = renderRoleplaySnapshot(OWNER_PERSONA, 'immersive')
+
+    expect(companion).toContain('Companion identity: Luna.')
+    expect(companion).not.toContain('Example 1 Luna:')
+    expect(immersive).toContain('Example 1 Luna: Not yet. I should verify it.')
   })
 })

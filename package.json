@@ -1,6 +1,6 @@
 {
   "name": "@mistymoon/dsh",
-  "version": "0.0.1-rc1",
+  "version": "0.0.1-rc2",
   "description": "Long-term companion plugin suite for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
@@ -8,6 +8,7 @@
     "access": "public"
   },
   "files": [
+    "THIRD_PARTY_NOTICES.md",
     "cordis.patch.yml",
     "packages/settings-ui/lib",
     "packages/foundation/lib",
@@ -78,7 +79,9 @@
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-commands": ">=0.1.0-rc.5 <0.1.0",
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-session": ">=0.1.0-rc.5 <0.1.0",
     "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.5 <0.1.0",
     "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5 <0.1.0"
     ,"@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.5 <0.1.0"
@@ -91,6 +94,8 @@
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-commands": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
     "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-connection": "0.1.0-rc.6",
     "@deepseek-ai/dsh-client-locale": "0.1.0-rc.6",

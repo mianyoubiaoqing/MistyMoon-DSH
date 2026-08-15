@@ -13,6 +13,9 @@ const host: UserConfig = {
   dts: false,
   clean: false,
   noExternal: id => id === '@mistymoon/dsh-foundation/persona-document'
+    || id === '@mistymoon/dsh-foundation/persona-workspace'
+    || id === '@mistymoon/dsh-foundation/character-card'
+    || id === '@mistymoon/dsh-foundation/character-card-container'
     || id === '@mistymoon/dsh-memory/runtime-settings',
 }
 
