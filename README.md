@@ -5,7 +5,7 @@ MistyMoon is a local-first long-term companion assembled as external DeepSeek Ha
 ## Current foundation slice
 
 - `@mistymoon/dsh-foundation` initializes a private persona exactly once, validates its versioned JSON, never overwrites owner edits, and replaces DSH's standard persona slot through `system-prompt/assemble`. Persona version 2 stores identity, relationship rules for the owner/familiar people/strangers, communication instructions, reference dialogs, and response-length guidance; version 1 files are upgraded in memory and are written as version 2 after the next settings save.
-- `@mistymoon/dsh-memory` stores explicit owner requests such as `请记住：……` in private append-only JSONL, deduplicates them by DSH message id, logs recalled context as source-attributed DSH messages, and supplies DSH-native list/replace/forget tools.
+- `@mistymoon/dsh-memory` stores explicit owner requests such as `请记住：……` in private append-only JSONL, deduplicates them by DSH message id, logs recalled context as source-attributed DSH messages, and supplies DSH-native governance tools. Inferred facts enter a separate candidate queue and remain unavailable to recall until the owner explicitly approves them.
 - The repository root is the installable `@mistymoon/dsh` bundle. It exports the foundation and memory plugins as package subpaths and does not patch DSH source.
 - The root package also provides a loopback-only Host settings API and a Web client tab under **Settings → Plugins → MistyMoon**. It edits the private persona and per-request memory recall limit without exposing owner files to non-loopback clients.
 - DSH's own `plugin --profile web add` command appends the suite after the official base and Web layers; MistyMoon never hand-writes the profile manifest.
