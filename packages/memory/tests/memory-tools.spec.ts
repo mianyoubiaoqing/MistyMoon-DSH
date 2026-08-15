@@ -55,4 +55,37 @@ describe('MistyMoon memory tools', () => {
 
     expect(value(await execute(ctx, 'memory_list', {}, 'call-list-final'))).toEqual({ memories: [] })
   })
+
+  it('requires an explicit owner review before a proposed memory becomes active', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-review-tools-'))
+    const path = join(root, 'memories.jsonl')
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(MemoryPlugin, { path, recallLimit: 4 })
+
+    const proposed = value(await execute(ctx, 'memory_candidate_propose', {
+      content: '主人通常在周末整理书桌。',
+      visibility: 'personal',
+    }, 'call-propose')) as { candidate: { id: string } }
+    expect(proposed).toEqual({
+      candidate: expect.objectContaining({ content: '主人通常在周末整理书桌。', status: 'pending' }),
+    })
+    expect(value(await execute(ctx, 'memory_candidate_list', {}, 'call-candidate-list'))).toEqual({
+      candidates: [expect.objectContaining({ id: proposed.candidate.id, status: 'pending' })],
+    })
+    expect(value(await execute(ctx, 'memory_list', { query: '周末' }, 'call-memory-list'))).toEqual({ memories: [] })
+
+    const approved = value(await execute(ctx, 'memory_candidate_approve', {
+      candidateId: proposed.candidate.id,
+    }, 'call-approve'))
+    expect(approved).toEqual({
+      memory: expect.objectContaining({ content: '主人通常在周末整理书桌。', status: 'confirmed' }),
+    })
+    expect(value(await execute(ctx, 'memory_candidate_list', {}, 'call-candidate-list-final'))).toEqual({ candidates: [] })
+    expect(value(await execute(ctx, 'memory_list', { query: '周末' }, 'call-memory-list-final'))).toEqual({
+      memories: [expect.objectContaining({ content: '主人通常在周末整理书桌。' })],
+    })
+  })
 })

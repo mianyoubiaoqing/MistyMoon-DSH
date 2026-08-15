@@ -92,4 +92,71 @@ describe('companion memory archive', () => {
     expect(reopened.recall({ query: '凤凰单丛' })).toEqual([replacement])
     expect(reopened.list({ includeInactive: true })).toEqual(archive.list({ includeInactive: true }))
   })
+
+  it('keeps proposed memories out of recall until the owner approves them', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-candidate-'))
+    const path = join(root, 'memory.jsonl')
+    const ids = ['candidate-1', 'memory-1', 'event-1']
+    const archive = await openMemoryArchive({
+      path,
+      createId: () => ids.shift() ?? 'unexpected-id',
+      now: () => new Date('2026-08-14T10:00:00.000Z'),
+    })
+
+    const candidate = await archive.propose({
+      sourceMessageId: 'tool-propose-1',
+      content: '主人通常在周末整理书桌。',
+      visibility: 'personal',
+    })
+
+    expect(candidate).toMatchObject({ id: 'candidate-1', status: 'pending' })
+    expect(archive.recall({ query: '周末' })).toEqual([])
+    expect(archive.listCandidates()).toEqual([candidate])
+
+    const memory = await archive.approveCandidate({
+      candidateId: candidate.id,
+      sourceMessageId: 'tool-approve-1',
+    })
+
+    expect(memory).toMatchObject({
+      id: 'memory-1',
+      content: '主人通常在周末整理书桌。',
+      sourceCandidateId: 'candidate-1',
+      status: 'confirmed',
+    })
+    expect(candidate.status).toBe('approved')
+    expect(archive.listCandidates()).toEqual([])
+    expect(archive.recall({ query: '周末' })).toEqual([memory])
+
+    const reopened = await openMemoryArchive({ path })
+    expect(reopened.listCandidates({ includeResolved: true })).toEqual([candidate])
+    expect(reopened.recall({ query: '周末' })).toEqual([memory])
+  })
+
+  it('retains rejected candidates for audit without making them recallable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-rejected-candidate-'))
+    const path = join(root, 'memory.jsonl')
+    const ids = ['candidate-1', 'event-1']
+    const archive = await openMemoryArchive({
+      path,
+      createId: () => ids.shift() ?? 'unexpected-id',
+      now: () => new Date('2026-08-14T10:00:00.000Z'),
+    })
+    const candidate = await archive.propose({
+      sourceMessageId: 'tool-propose-1',
+      content: '主人每天凌晨四点起床。',
+      visibility: 'personal',
+    })
+
+    const rejected = await archive.rejectCandidate({
+      candidateId: candidate.id,
+      sourceMessageId: 'tool-reject-1',
+    })
+
+    expect(rejected.status).toBe('rejected')
+    expect(archive.listCandidates()).toEqual([])
+    expect(archive.recall({ query: '凌晨四点' })).toEqual([])
+    const reopened = await openMemoryArchive({ path })
+    expect(reopened.listCandidates({ includeResolved: true })).toEqual([rejected])
+  })
 })

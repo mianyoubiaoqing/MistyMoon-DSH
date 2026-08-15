@@ -36,6 +36,7 @@ describe('MistyMoon memory plugin', () => {
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(MemoryPlugin, { path: join(root, 'memory.jsonl'), recallLimit: 4 })
+    expect(ctx.mistymoonMemory).toBeDefined()
     const session = Session.create(SessionId('memory-session'))
     const agent = sessionAgent(session)
     const remember = createUserMessage({

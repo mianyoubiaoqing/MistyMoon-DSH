@@ -2,12 +2,16 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { MemoryCandidate } from '@mistymoon/dsh-memory'
 import type { MistyMoonSettingsSnapshot } from '../index.js'
 
 /** Registration-side operations used by the settings page. */
 export interface MistyMoonSettingsTabInjected {
   read: () => Promise<MistyMoonSettingsSnapshot>
   save: (settings: MistyMoonSettingsSnapshot) => Promise<MistyMoonSettingsSnapshot>
+  listCandidates: () => Promise<MemoryCandidate[]>
+  approveCandidate: (candidateId: string) => Promise<void>
+  rejectCandidate: (candidateId: string) => Promise<void>
 }
 
 /** Props assembled by the Settings slot renderer. */
@@ -18,6 +22,10 @@ export type MistyMoonSettingsTabProps =
 
 type LoadState = 'loading' | 'error' | 'ready'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+interface CandidateDecisionState {
+  id: string
+  action: 'approve' | 'reject'
+}
 
 function lines(value: string): string[] {
   return value.split(/\r?\n/u).map(item => item.trim()).filter(Boolean)
@@ -37,26 +45,38 @@ function parseDialogs(value: string): MistyMoonSettingsSnapshot['persona']['refe
 }
 
 /** Render the private MistyMoon settings editor. */
-export function MistyMoonSettingsTab({ read, save, t }: MistyMoonSettingsTabProps): ReactNode {
+export function MistyMoonSettingsTab({
+  read,
+  save,
+  listCandidates,
+  approveCandidate,
+  rejectCandidate,
+  t,
+}: MistyMoonSettingsTabProps): ReactNode {
   const [request, setRequest] = useState(0)
   const [loadState, setLoadState] = useState<LoadState>('loading')
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [draft, setDraft] = useState<MistyMoonSettingsSnapshot | undefined>()
+  const [candidates, setCandidates] = useState<MemoryCandidate[]>([])
+  const [candidateDecision, setCandidateDecision] = useState<CandidateDecisionState | undefined>()
+  const [candidateError, setCandidateError] = useState(false)
 
   useEffect(() => {
     let current = true
     setLoadState('loading')
-    void read().then(
-      (settings) => {
+    void Promise.all([read(), listCandidates()]).then(
+      ([settings, nextCandidates]) => {
         if (!current) return
         setDraft(settings)
+        setCandidates(nextCandidates)
         setLoadState('ready')
         setSaveState('idle')
+        setCandidateError(false)
       },
       () => { if (current) setLoadState('error') },
     )
     return () => { current = false }
-  }, [read, request])
+  }, [listCandidates, read, request])
 
   if (loadState === 'loading') return <p className="mistymoon-status">{t('loading')}</p>
   if (loadState === 'error' || draft === undefined) {
@@ -98,6 +118,23 @@ export function MistyMoonSettingsTab({ read, save, t }: MistyMoonSettingsTabProp
         setSaveState('saved')
       },
       () => { setSaveState('error') },
+    )
+  }
+
+  const resolveCandidate = (candidateId: string, decision: 'approve' | 'reject'): void => {
+    if (candidateDecision !== undefined) return
+    setCandidateDecision({ id: candidateId, action: decision })
+    setCandidateError(false)
+    const operation = decision === 'approve' ? approveCandidate(candidateId) : rejectCandidate(candidateId)
+    void operation.then(
+      () => {
+        setCandidates(current => current.filter(candidate => candidate.id !== candidateId))
+        setCandidateDecision(undefined)
+      },
+      () => {
+        setCandidateDecision(undefined)
+        setCandidateError(true)
+      },
     )
   }
 
@@ -328,6 +365,40 @@ export function MistyMoonSettingsTab({ read, save, t }: MistyMoonSettingsTabProp
           />
           <small>{t('recallLimitHint')}</small>
         </label>
+        <div className="mistymoon-review" aria-labelledby="mistymoon-candidate-title">
+          <div>
+            <h4 id="mistymoon-candidate-title">{t('candidateTitle')}</h4>
+            <p>{t('candidateHint')}</p>
+          </div>
+          {candidates.length === 0 ? <p className="mistymoon-empty">{t('candidateEmpty')}</p> : null}
+          {candidates.map(candidate => (
+            <article className="mistymoon-candidate" key={candidate.id}>
+              <p>{candidate.content}</p>
+              <small>{candidate.visibility === 'confidential' ? t('confidential') : t('personal')}</small>
+              <div className="mistymoon-candidate-actions">
+                <button
+                  type="button"
+                  disabled={candidateDecision !== undefined}
+                  onClick={() => { resolveCandidate(candidate.id, 'approve') }}
+                >
+                  {candidateDecision?.id === candidate.id && candidateDecision.action === 'approve'
+                    ? t('reviewing')
+                    : t('candidateApprove')}
+                </button>
+                <button
+                  type="button"
+                  disabled={candidateDecision !== undefined}
+                  onClick={() => { resolveCandidate(candidate.id, 'reject') }}
+                >
+                  {candidateDecision?.id === candidate.id && candidateDecision.action === 'reject'
+                    ? t('reviewing')
+                    : t('candidateReject')}
+                </button>
+              </div>
+            </article>
+          ))}
+          {candidateError ? <p className="mistymoon-validation" role="alert">{t('candidateError')}</p> : null}
+        </div>
       </fieldset>
 
       {!valid ? <p className="mistymoon-validation" role="alert">{t('invalid')}</p> : null}
