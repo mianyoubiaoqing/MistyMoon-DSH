@@ -2,7 +2,7 @@
 
 MistyMoon 是一套以角色扮演（Roleplay，简称 RP）和长期陪伴为核心的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 外置插件。项目保留 MistyMoon 的人格、关系、长期记忆与陪伴体验，同时复用 DSH 的 Agent Runtime、会话、工具、权限和 Web 插件体系，不修改 DSH 源码，也不重复实现 Agent Loop。
 
-> 当前公开版本为 `0.0.1-rc1`，仍处于候选发布阶段。请先在本地测试环境中使用，并保留私有数据备份。
+> 当前公开版本为 `0.0.1-rc2`，仍处于候选发布阶段。请先在本地测试环境中使用，并保留私有数据备份。
 
 ## 产品定位
 
@@ -19,9 +19,11 @@ MistyMoon 不是单纯的聊天 UI 或通用记忆数据库，而是 DSH 上的 
 
 - 首次启动时，从中性模板创建一份用户私有的人格文件。
 - 人格文件支持身份、关系、熟人和陌生人差异、表达规则、参考对话与回复长度预算。
-- 设置页可直接编辑人格；保存后从下一次请求开始生效。
+- 设置页将编辑保存为不参与对话的草稿，可预览模型可见人格；只有明确点击发布后才会从下一次请求开始生效，并可回滚到旧活动版本。
 - 安装或升级插件不会覆盖用户已经修改的人格。
 - 真实人格只保存在用户的 DSH Home，不会进入本仓库或 npm 包。
+- RP 与 DSH Agent 预设和协作模式相互独立。`minimal`、标准、Plan、权限和工具配置均保持原样；人格作为带来源的会话消息在真实用户请求前投影，不覆盖 DSH 系统提示词。长任务的后续工具步骤会重复一条精简语气提醒，降低上下文增长造成的最终回复人格漂移。
+- 每个会话可使用 `/rp off`、`/rp companion` 或 `/rp immersive` 选择展示等级；默认 `companion`，Coding 场景不会把代码、命令、计划、诊断或技术决策角色化。
 
 ### 长期记忆
 
@@ -36,6 +38,8 @@ MistyMoon 不是单纯的聊天 UI 或通用记忆数据库，而是 DSH 上的 
 
 - 入口：**设置 → 插件 → MistyMoon**。
 - 可编辑人格、关系规则、参考对话、回复预算和单次记忆召回上限。
+- 可导入 Character Card V1/V2/V3 JSON、PNG/APNG 和 CHARX，在字段映射与人格差异预览后保存为未发布草稿。
+- 角色卡的系统提示词和场景映射默认关闭；Creator Notes、问候、世界书、扩展和未知字段不会自动进入人格或模型上下文。
 - 可在页面中批准或拒绝候选记忆。
 - Host API 只允许本机回环来源访问，避免私有人格和记忆通过普通远程页面暴露。
 
@@ -54,13 +58,30 @@ MistyMoon 通过 DSH 原生插件扩展点实现功能：
 DeepSeek Harness
 ├─ Agent、会话、工具、权限与 Web Runtime
 └─ MistyMoon RP 插件套件
-   ├─ foundation     私有人格与系统提示词投影
+   ├─ foundation     私有人格生命周期与会话级 RP 投影
    ├─ memory         长期记忆、候选审核与召回
    ├─ settings-ui    本机设置和候选记忆审核页面
    └─ installer      开发预览安装器
 ```
 
 记忆插件只维护一个进程级档案实例。Agent 工具、召回流程与设置页共同使用该实例，避免多个进程内视图同时写入同一份 JSONL 文件。DSH 会话保存原始对话和模型可见投影，MistyMoon 记忆档案只保存经过选择的跨会话事实。
+
+详细模块职责、外部记忆 Provider 和安全边界见 [架构说明](docs/architecture.md)；开发与 Agent 协作遵循 [AGENTS.md](AGENTS.md)。
+
+## 本套件包含的插件
+
+下表中的组件随 `@mistymoon/dsh` 一起维护和发布，属于 MistyMoon 插件套件：
+
+| 组件 | DSH 加载名或入口 | 职责 |
+| --- | --- | --- |
+| Foundation | `@mistymoon/dsh/foundation` | 私有人格生命周期、RP 等级、会话级人格投影、Character Card 解析和字段映射 |
+| Memory | `@mistymoon/dsh/memory` | 长期记忆档案、候选审核、召回快照和记忆工具 |
+| Settings UI Host | `@mistymoon/dsh` | 本机回环 RPC、人设草稿/发布/回滚、角色卡导入和记忆审核 |
+| Settings UI Client | `@mistymoon/dsh/client` | DSH Web 中的 MistyMoon 设置页面 |
+| Bundle Patch | `cordis.patch.yml` | 将以上运行时插件组合进 DSH Profile |
+| Preview Installer | `@mistymoon/dsh-installer` | 源码开发预览和本机安装辅助，不是常驻运行时插件 |
+
+以下项目不属于本套件，也不会因为安装 MistyMoon 而自动随包提供：`dsh-noema`、`dsh-anchored-standard`、DeepSeek Harness Desktop、Mnemon、Mem0、NapCat、OwO-Desktop、Live2D Runtime 与任何角色模型或素材。它们只是已评估的外部项目、未来可选 Provider/Adapter 或用户独立安装的依赖，各自保留自己的许可证、配置和发布责任。
 
 ## 环境要求
 
@@ -83,6 +104,8 @@ pnpm dsh --profile web
 ```
 
 DSH 负责生成和维护 Web Profile。MistyMoon 不会手工修改 DSH 仓库或 Profile 的 `package.json`。
+
+MistyMoon 不要求专用 Agent 预设。可在任意 DSH 预设和协作模式中用 `/rp` 查看当前 RP 等级；需要纯 DSH Coding 体验时使用 `/rp off`，需要轻量陪伴语气时使用默认的 `/rp companion`，完整 RP 使用 `/rp immersive`。
 
 若端口 `3080` 已被其他 DSH 进程占用，可以停止旧进程，或为新实例指定其他端口：
 
@@ -134,7 +157,10 @@ pnpm preview:migrate-memory -- D:\path\to\legacy.db --apply
 
 ```text
 mistymoon/
-├─ persona/persona.json
+├─ persona/
+│  ├─ persona.json
+│  ├─ draft.json（仅在存在未发布草稿时）
+│  └─ versions/（活动人格的回滚历史）
 ├─ memory/memories.jsonl
 └─ settings/settings.json
 ```
@@ -163,12 +189,18 @@ pnpm check
 - [x] 版本化私有人格、关系规则、参考对话与回复预算
 - [x] 明确记忆的追加式保存、纠正、遗忘和审计历史
 - [x] 候选记忆的提议、批准、拒绝和设置页审核
-- [ ] 人格草稿、预览、发布和回滚，避免编辑中的人格直接影响对话
+- [x] RP 展示等级与 DSH 预设/协作模式正交，兼容 `minimal` 且不覆盖 Coding、工具、权限和安全规则
+- [x] 长任务每个后续模型步骤注入可审计的精简语气提醒，避免完整人格在长上下文中被稀释
+- [x] 人格草稿、精确预览、显式发布、并发覆盖保护和版本回滚
+- [x] Character Card V1/V2/V3 JSON 的不可信输入解析、未知字段保留和私有草稿模型
+- [x] Character Card 草稿预览、字段映射 UI，以及带大小/路径/压缩比限制的 PNG/APNG、CHARX 容器解析；详见 [导入设计](docs/persona-import.md)
 - [ ] 自动候选提取 Provider：对回复后的稳定事实生成候选，但不自动批准
-- [ ] 冲突检测：发现新候选与现有记忆矛盾时要求主人选择
+- [ ] 冲突检测与替代链：发现矛盾时要求主人选择，接受新值后以墓碑和 `supersedes` 保留旧值
 - [ ] 记忆整合、衰减、归档与恢复
 - [ ] 专用记忆管理页：搜索、筛选、批量审核和来源查看
-- [ ] 为记忆日志增加版本化迁移和损坏恢复工具
+- [ ] 为记忆日志增加版本化迁移、文件锁、原子写入和损坏恢复工具
+- [ ] BM25、PageIndex 与图关系融合召回，以及可解释的召回结果
+- [ ] 候选记忆的编辑、合并和不含敏感载荷的操作审计
 
 ### P1：陪伴与通信
 
@@ -186,6 +218,7 @@ pnpm check
 - [ ] Windows 代码签名、更新包哈希和离线签名验证
 - [ ] 手机端页面与安全的远程 RP 会话入口
 - [ ] 基于系统 SSH 端口转发或窄权限 SSH Gateway 的手机直连方案
+- [ ] Noema 只读 shadow mode 与可选记忆 Provider；通过身份、来源、生命周期和 Windows 一致性门槛后再开放替换
 - [ ] Mnemon 和 Mem0 可选记忆 Provider
 - [ ] LivingMemory 逻辑数据导入器，不复制其 AGPL 实现
 

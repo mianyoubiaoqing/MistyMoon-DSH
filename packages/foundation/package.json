@@ -1,6 +1,6 @@
 {
   "name": "@mistymoon/dsh-foundation",
-  "version": "0.0.1-rc1",
+  "version": "0.0.1-rc2",
   "description": "Private persona projection and publication safety for MistyMoon on DSH",
   "private": true,
   "type": "module",
@@ -20,6 +20,22 @@
     "./persona-document": {
       "types": "./lib/persona-document.d.ts",
       "default": "./lib/persona-document.js"
+    },
+    "./persona-home": {
+      "types": "./lib/persona-home.d.ts",
+      "default": "./lib/persona-home.js"
+    },
+    "./persona-workspace": {
+      "types": "./lib/persona-workspace.d.ts",
+      "default": "./lib/persona-workspace.js"
+    },
+    "./character-card": {
+      "types": "./lib/character-card.d.ts",
+      "default": "./lib/character-card.js"
+    },
+    "./character-card-container": {
+      "types": "./lib/character-card-container.d.ts",
+      "default": "./lib/character-card-container.js"
     }
   },
   "scripts": {
@@ -27,13 +43,24 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.5 <0.1.0"
+    "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-commands": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5 <0.1.0",
+    "@deepseek-ai/dsh-session": ">=0.1.0-rc.5 <0.1.0"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "3.18.1"
+    "@deepseek-ai/schemastery": "3.18.1",
+    "yauzl": "3.2.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6"
+    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-commands": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.6",
+    "@types/yauzl": "2.10.3",
+    "@types/yazl": "3.3.0",
+    "yazl": "3.3.1"
   }
 }

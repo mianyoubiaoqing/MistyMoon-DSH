@@ -3,12 +3,29 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { MemoryCandidate } from '@mistymoon/dsh-memory'
-import type { MistyMoonSettingsSnapshot } from '../index.js'
+import {
+  DEFAULT_CHARACTER_CARD_MAPPING,
+  type CharacterCardPersonaMapping,
+} from '@mistymoon/dsh-foundation/character-card'
+import type { MistyMoonCharacterCardPreview, MistyMoonSettingsSnapshot } from '../index.js'
 
 /** Registration-side operations used by the settings page. */
 export interface MistyMoonSettingsTabInjected {
   read: () => Promise<MistyMoonSettingsSnapshot>
   save: (settings: MistyMoonSettingsSnapshot) => Promise<MistyMoonSettingsSnapshot>
+  publishPersona: () => Promise<MistyMoonSettingsSnapshot>
+  discardPersona: () => Promise<MistyMoonSettingsSnapshot>
+  rollbackPersona: (versionId: string) => Promise<MistyMoonSettingsSnapshot>
+  previewCharacterCard: (
+    fileName: string,
+    contentBase64: string,
+    mapping: CharacterCardPersonaMapping,
+  ) => Promise<MistyMoonCharacterCardPreview>
+  applyCharacterCard: (
+    fileName: string,
+    contentBase64: string,
+    mapping: CharacterCardPersonaMapping,
+  ) => Promise<MistyMoonSettingsSnapshot>
   listCandidates: () => Promise<MemoryCandidate[]>
   approveCandidate: (candidateId: string) => Promise<void>
   rejectCandidate: (candidateId: string) => Promise<void>
@@ -22,6 +39,7 @@ export type MistyMoonSettingsTabProps =
 
 type LoadState = 'loading' | 'error' | 'ready'
 type SaveState = 'idle' | 'saving' | 'saved' | 'error'
+type CardState = 'idle' | 'reading' | 'previewed' | 'applying' | 'applied' | 'error'
 interface CandidateDecisionState {
   id: string
   action: 'approve' | 'reject'
@@ -44,10 +62,23 @@ function parseDialogs(value: string): MistyMoonSettingsSnapshot['persona']['refe
   })
 }
 
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768))
+  }
+  return btoa(binary)
+}
+
 /** Render the private MistyMoon settings editor. */
 export function MistyMoonSettingsTab({
   read,
   save,
+  publishPersona,
+  discardPersona,
+  rollbackPersona,
+  previewCharacterCard,
+  applyCharacterCard,
   listCandidates,
   approveCandidate,
   rejectCandidate,
@@ -60,6 +91,10 @@ export function MistyMoonSettingsTab({
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([])
   const [candidateDecision, setCandidateDecision] = useState<CandidateDecisionState | undefined>()
   const [candidateError, setCandidateError] = useState(false)
+  const [cardState, setCardState] = useState<CardState>('idle')
+  const [cardFile, setCardFile] = useState<{ name: string; contentBase64: string }>()
+  const [cardMapping, setCardMapping] = useState<CharacterCardPersonaMapping>({ ...DEFAULT_CHARACTER_CARD_MAPPING })
+  const [cardPreview, setCardPreview] = useState<MistyMoonCharacterCardPreview>()
 
   useEffect(() => {
     let current = true
@@ -121,6 +156,18 @@ export function MistyMoonSettingsTab({
     )
   }
 
+  const updateWorkspace = (operation: () => Promise<MistyMoonSettingsSnapshot>): void => {
+    if (saveState === 'saving') return
+    setSaveState('saving')
+    void operation().then(
+      (settings) => {
+        setDraft(settings)
+        setSaveState('saved')
+      },
+      () => { setSaveState('error') },
+    )
+  }
+
   const resolveCandidate = (candidateId: string, decision: 'approve' | 'reject'): void => {
     if (candidateDecision !== undefined) return
     setCandidateDecision({ id: candidateId, action: decision })
@@ -138,12 +185,135 @@ export function MistyMoonSettingsTab({
     )
   }
 
+  const refreshCardPreview = (file = cardFile, mapping = cardMapping): void => {
+    if (file === undefined || cardState === 'reading' || cardState === 'applying') return
+    setCardState('reading')
+    void previewCharacterCard(file.name, file.contentBase64, mapping).then(
+      (preview) => {
+        setCardPreview(preview)
+        setCardState('previewed')
+      },
+      () => {
+        setCardPreview(undefined)
+        setCardState('error')
+      },
+    )
+  }
+
+  const readCard = (file: File | undefined): void => {
+    if (file === undefined) return
+    setCardState('reading')
+    setCardPreview(undefined)
+    void file.arrayBuffer().then(
+      (buffer) => {
+        const next = { name: file.name, contentBase64: bytesToBase64(new Uint8Array(buffer)) }
+        setCardFile(next)
+        refreshCardPreview(next, cardMapping)
+      },
+      () => { setCardState('error') },
+    )
+  }
+
+  const applyCard = (): void => {
+    if (cardFile === undefined || cardPreview === undefined || cardState === 'applying') return
+    setCardState('applying')
+    void applyCharacterCard(cardFile.name, cardFile.contentBase64, cardMapping).then(
+      (settings) => {
+        setDraft(settings)
+        setCardState('applied')
+      },
+      () => { setCardState('error') },
+    )
+  }
+
   return (
     <section className="mistymoon-settings" aria-labelledby="mistymoon-settings-title">
       <header>
         <h3 id="mistymoon-settings-title">{t('title')}</h3>
         <p>{t('intro')}</p>
       </header>
+
+      <fieldset className="mistymoon-import">
+        <legend>{t('cardImport')}</legend>
+        <p className="mistymoon-status">{t('cardImportHint')}</p>
+        <input
+          type="file"
+          accept=".json,.png,.apng,.charx,application/json,image/png,application/zip"
+          onChange={(event) => { readCard(event.currentTarget.files?.[0]) }}
+        />
+        {cardPreview === undefined ? null : (
+          <>
+            <div className="mistymoon-import-meta">
+              <span>{cardPreview.source.container.toUpperCase()}</span>
+              <span>{cardPreview.draft.source.generation.toUpperCase()}</span>
+              <span>{cardPreview.source.byteLength} bytes</span>
+              <span>{cardPreview.draft.character.name}</span>
+            </div>
+            <div className="mistymoon-grid">
+              <label>
+                <span>{t('cardDisplayName')}</span>
+                <select
+                  value={cardMapping.displayName}
+                  onChange={(event) => {
+                    setCardMapping({ ...cardMapping, displayName: event.currentTarget.value as 'name' | 'nickname' })
+                    setCardState('idle')
+                  }}
+                >
+                  <option value="name">{t('cardName')}</option>
+                  <option value="nickname">{t('cardNickname')}</option>
+                </select>
+              </label>
+              {([
+                ['includeDescription', 'cardDescription'],
+                ['includePersonality', 'cardPersonality'],
+                ['includeScenarioAsRelationship', 'cardScenario'],
+                ['includeSystemPrompt', 'cardSystemPrompt'],
+                ['includePostHistoryInstructions', 'cardPostHistory'],
+                ['includeExampleDialog', 'cardExamples'],
+              ] as const).map(([key, label]) => (
+                <label className="mistymoon-check" key={key}>
+                  <input
+                    type="checkbox"
+                    checked={cardMapping[key]}
+                    onChange={(event) => {
+                      setCardMapping({ ...cardMapping, [key]: event.currentTarget.checked })
+                      setCardState('idle')
+                    }}
+                  />
+                  <span>{t(label)}</span>
+                </label>
+              ))}
+            </div>
+            {cardPreview.warnings.length === 0 ? null : (
+              <ul className="mistymoon-import-warnings">
+                {cardPreview.warnings.map(warning => <li key={warning}>{warning}</li>)}
+              </ul>
+            )}
+            <label>
+              <span>{t('cardMappedPreview')}</span>
+              <pre className="mistymoon-preview">{JSON.stringify(cardPreview.persona, null, 2)}</pre>
+            </label>
+            <small>{t('cardMetadataWarning')}</small>
+            <div className="mistymoon-actions">
+              <button
+                className="mistymoon-secondary"
+                type="button"
+                disabled={cardState === 'reading' || cardState === 'applying'}
+                onClick={() => { refreshCardPreview() }}
+              >
+                {t('cardRefreshPreview')}
+              </button>
+              <button type="button" disabled={cardState !== 'previewed'} onClick={applyCard}>
+                {t('cardApplyDraft')}
+              </button>
+            </div>
+          </>
+        )}
+        {cardState === 'reading' ? <p className="mistymoon-status">{t('cardReading')}</p> : null}
+        {cardState === 'applying' ? <p className="mistymoon-status">{t('cardApplying')}</p> : null}
+        {cardState === 'applied' ? <p className="mistymoon-success">{t('cardApplied')}</p> : null}
+        {cardState === 'error' ? <p className="mistymoon-validation" role="alert">{t('cardError')}</p> : null}
+      </fieldset>
 
       <fieldset>
         <legend>{t('persona')}</legend>
@@ -402,11 +572,51 @@ export function MistyMoonSettingsTab({
       </fieldset>
 
       {!valid ? <p className="mistymoon-validation" role="alert">{t('invalid')}</p> : null}
+      {draft.hasPersonaDraft ? (
+        <fieldset>
+          <legend>{t('draftPreview')}</legend>
+          <p className="mistymoon-status">{t('draftHint')}</p>
+          <pre className="mistymoon-preview">{draft.personaPreview}</pre>
+        </fieldset>
+      ) : null}
+      {draft.personaVersions.length > 0 ? (
+        <fieldset>
+          <legend>{t('versionHistory')}</legend>
+          {draft.personaVersions.map(version => (
+            <div className="mistymoon-version" key={version.id}>
+              <small>{version.displayName} · {new Date(version.createdAt).toLocaleString()}</small>
+              <button
+                type="button"
+                disabled={draft.hasPersonaDraft || saveState === 'saving'}
+                onClick={() => { updateWorkspace(() => rollbackPersona(version.id)) }}
+              >
+                {t('rollback')}
+              </button>
+            </div>
+          ))}
+          {draft.hasPersonaDraft ? <small>{t('rollbackDraftWarning')}</small> : null}
+        </fieldset>
+      ) : null}
       {saveState === 'saved' ? <p className="mistymoon-success" role="status">{t('saved')}</p> : null}
       {saveState === 'error' ? <p className="mistymoon-validation" role="alert">{t('saveError')}</p> : null}
       <div className="mistymoon-actions">
+        <button
+          className="mistymoon-secondary"
+          type="button"
+          disabled={!draft.hasPersonaDraft || saveState === 'saving'}
+          onClick={() => { updateWorkspace(discardPersona) }}
+        >
+          {t('discardDraft')}
+        </button>
+        <button
+          type="button"
+          disabled={!draft.hasPersonaDraft || saveState === 'saving'}
+          onClick={() => { updateWorkspace(publishPersona) }}
+        >
+          {t('publishPersona')}
+        </button>
         <button type="button" disabled={!valid || saveState === 'saving'} onClick={submit}>
-          {saveState === 'saving' ? t('saving') : t('save')}
+          {saveState === 'saving' ? t('saving') : t('saveDraft')}
         </button>
       </div>
     </section>

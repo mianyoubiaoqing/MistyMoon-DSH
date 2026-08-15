@@ -1,6 +1,6 @@
 {
   "name": "@mistymoon/dsh-memory",
-  "version": "0.0.1-rc1",
+  "version": "0.0.1-rc2",
   "description": "Durable companion memory for MistyMoon on DSH",
   "private": true,
   "type": "module",

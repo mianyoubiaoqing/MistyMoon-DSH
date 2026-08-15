@@ -3,6 +3,7 @@
       name: '@mistymoon/dsh/foundation'
       config:
         home: !!js dshHomePath('mistymoon')
+        defaultRoleplayMode: companion
 
     - id: mistymoon-settings-ui
       name: '@mistymoon/dsh'
