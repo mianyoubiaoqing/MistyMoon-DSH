@@ -154,6 +154,13 @@ export interface CompanionMemoryArchive {
   rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate>
 }
 
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Process-wide MistyMoon archive shared by tools and local governance UI. */
+    mistymoonMemory: CompanionMemoryArchive
+  }
+}
+
 /** Construction inputs for a private memory archive. */
 export interface OpenMemoryArchiveOptions {
   path: string
@@ -1009,6 +1016,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     throw new TypeError(`mistymoon-memory: recallLimit must be an integer from 1 through 20, got ${String(recallLimit)}`)
   }
   const archive = await openMemoryArchive({ path: config.path })
+  ctx.effect(() => ctx.provide('mistymoonMemory', archive), 'mistymoon-memory: shared archive')
   registerMemoryTools(ctx, archive)
   ctx.on('agent/pre-step', async (_payload, next): Promise<PreStepDecision> => {
     const decision = await next()

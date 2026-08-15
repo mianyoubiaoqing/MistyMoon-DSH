@@ -10,12 +10,13 @@ import {
   loadMemoryRuntimeSettings,
   saveMemoryRuntimeSettings,
 } from '@mistymoon/dsh-memory/runtime-settings'
+import type { CompanionMemoryArchive, MemoryCandidate, MemoryRecord } from '@mistymoon/dsh-memory'
 
 /** Cordis plugin name. */
 export const name = 'mistymoon-settings-ui'
 
 /** Host transport required by the local settings page. */
-export const inject = ['connection']
+export const inject = ['connection', 'mistymoonMemory']
 
 /** Settings-page Host configuration. */
 export interface Config {
@@ -81,6 +82,52 @@ export async function saveMistyMoonSettings(home: string, value: unknown): Promi
   return { persona, recallLimit: memory.recallLimit }
 }
 
+/**
+ * Read the pending candidate queue from the process-wide memory archive.
+ * @param archive - Archive shared with recall and DSH memory tools.
+ * @returns Pending candidates ordered newest first.
+ */
+export function readMistyMoonCandidates(archive: CompanionMemoryArchive): MemoryCandidate[] {
+  return archive.listCandidates()
+}
+
+/**
+ * Approve one candidate from the local owner UI.
+ * @param archive - Archive shared with recall and DSH memory tools.
+ * @param candidateId - Candidate selected by the owner.
+ * @param requestId - Browser-generated idempotency id.
+ * @returns Newly confirmed memory.
+ */
+export async function approveMistyMoonCandidate(
+  archive: CompanionMemoryArchive,
+  candidateId: string,
+  requestId: string,
+): Promise<MemoryRecord> {
+  return archive.approveCandidate({ candidateId, sourceMessageId: `settings-ui:${requestId}` })
+}
+
+/**
+ * Reject one candidate from the local owner UI.
+ * @param archive - Archive shared with recall and DSH memory tools.
+ * @param candidateId - Candidate selected by the owner.
+ * @param requestId - Browser-generated idempotency id.
+ * @returns Rejected candidate retained in private audit history.
+ */
+export async function rejectMistyMoonCandidate(
+  archive: CompanionMemoryArchive,
+  candidateId: string,
+  requestId: string,
+): Promise<MemoryCandidate> {
+  return archive.rejectCandidate({ candidateId, sourceMessageId: `settings-ui:${requestId}` })
+}
+
+function candidateDecision(value: unknown): { candidateId: string; requestId: string } | undefined {
+  if (!exactObject(value, ['candidateId', 'requestId'])) return undefined
+  if (typeof value.candidateId !== 'string' || value.candidateId.trim() === '') return undefined
+  if (typeof value.requestId !== 'string' || value.requestId.trim() === '') return undefined
+  return { candidateId: value.candidateId, requestId: value.requestId }
+}
+
 /** Mount the loopback-only RPC channel used by the MistyMoon browser bundle. */
 export function apply(ctx: Context, config: Config): void {
   ctx.connection.rpc.handle('/mistymoon-settings', async (endpoint, payload) => {
@@ -95,6 +142,24 @@ export function apply(ctx: Context, config: Config): void {
           return { ok: true, value: await saveMistyMoonSettings(config.home, payload.settings) }
         } catch (error) {
           return badRequest(error instanceof Error ? error.message : 'MistyMoon settings are invalid.')
+        }
+      }
+      if (endpoint === 'candidate-list') {
+        if (!exactObject(payload, [])) return badRequest('MistyMoon candidate list expects an empty object.')
+        return { ok: true, value: readMistyMoonCandidates(ctx.mistymoonMemory) }
+      }
+      if (endpoint === 'candidate-approve' || endpoint === 'candidate-reject') {
+        const decision = candidateDecision(payload)
+        if (decision === undefined) {
+          return badRequest('MistyMoon candidate decisions require candidateId and requestId strings.')
+        }
+        try {
+          const value = endpoint === 'candidate-approve'
+            ? await approveMistyMoonCandidate(ctx.mistymoonMemory, decision.candidateId, decision.requestId)
+            : await rejectMistyMoonCandidate(ctx.mistymoonMemory, decision.candidateId, decision.requestId)
+          return { ok: true, value }
+        } catch (error) {
+          return badRequest(error instanceof Error ? error.message : 'MistyMoon candidate decision failed.')
         }
       }
       return badRequest('Unknown MistyMoon settings operation.')
