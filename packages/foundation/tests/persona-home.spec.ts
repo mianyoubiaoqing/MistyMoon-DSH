@@ -2,6 +2,8 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
+import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
+import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { describe, expect, it } from 'vitest'
 import * as Foundation from '../src/index.js'
 import { initializePersona } from '../src/index.js'
@@ -42,6 +44,8 @@ describe('initializePersona', () => {
   it('loads as a Cordis plugin and initializes the bundled neutral template', async () => {
     const privateHome = await mkdtemp(join(tmpdir(), 'mistymoon-plugin-'))
     const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
 
     const fiber = await ctx.plugin(Foundation, { home: privateHome })
 

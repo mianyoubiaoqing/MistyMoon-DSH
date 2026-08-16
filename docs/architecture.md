@@ -10,7 +10,7 @@ MistyMoon 是 DSH 上以 RP 和长期陪伴为核心的产品层，不是第二�
       ▼
 DSH Agent / Session / Permission / Tools
       │
-      ├─ Foundation ── 私有人格文档 ── agent/pre-step RP 快照
+      ├─ Foundation ── 私有人格文档 ── owner-tail capsule + final-voice-refresh gate
       │
       ├─ Memory ────── 所有者治理档案 ── agent/pre-step 自动召回
       │                                  │
@@ -25,17 +25,22 @@ DSH 会话日志保存原始交互和实际送入模型的人格、记忆投影�
 
 Foundation 管理版本化活动人格 `persona.json`、未发布的 `draft.json` 和 `versions/` 回滚历史。首次运行只从中性模板创建活动文件，升级不得覆盖用户版本。设置页保存只更新草稿；发布会先归档当前活动版本，并在草稿所基于的活动人格未被其他进程改变时原子替换活动文件。
 
-DSH 的 `minimal` 等完整预设会在系统提示词组装结束时恢复为唯一系统提示词，因此外置插件不能通过公开扩展点稳定地把 RP system prompt 放在它前面或后面。Foundation 不修改这一语义，也不复制 Agent 预设。它在 DSH 已完成系统提示词组装后，通过 `agent/pre-step` 把一条带插件来源的 RP 用户上下文插到真实用户消息之前；Agent Loop 随后把两条消息写入 DSH 会话日志再发送给模型。
+Foundation 不注册任何常驻人格 system-prompt section，也不在普通 assistant/tool step 重复投影 persona。`PersonaTurnDeliveryCoordinator` 统一拥有互斥双阶段画像：每个启用 RP 的真实 owner turn 在真实 owner message 落盘后、首次 provider request 前，通过 `agent/pre-step` 决策追加一条受 `turnVoiceMaxChars` 预算约束的 `mistymoon:turn-voice` output-presentation profile；renderer 只读取 `Speaker label`、`Relationship register` 与 `Voice traits` 结构化字段，`Activation` 只允许无 tool call 且结束 owner turn 的 response 应用。模型完成全部工作后，以唯一 tool call 调用 `mistymoon_prepare_final_reply`；合法且 RP 活动时，Coordinator 读取并校验私有人格，先把 active initial surface 替换为 neutral `mistymoon:turn-voice-superseded` lifecycle record，再排队 section 为 `mistymoon:final-voice-refresh` 的一次性 user context，并通过官方 Agent-scoped `tools.restrict()` 把该 Agent 下一请求的工具集合收窄为空。下一次请求就是无工具的 owner-facing final 请求，任一请求 active voice profile 合计不超过一。final 完成到达 `agent/turn-stopping` 后，Coordinator 撤销限制，并用纯事实的 lifecycle record（`mistymoon:turn-voice-consumed` 或 `mistymoon:final-voice-refresh-consumed`）surface replacement 取代 active voice 事件；record 不含 `no persona`、`ignore persona`、`do not roleplay` 等现在或未来的命令与禁止，raw log 保留原事件。
 
-长任务的第一步使用上述完整快照；发生工具调用后，每个继续执行的模型步骤都会在消息末尾增加一条仅含角色名、语气与“不干扰 DSH 操作”的精简提醒。该提醒同样带插件来源并写入会话日志，不修改代码、工具结果或系统提示词。它让最终自然语言回复附近始终存在人格语气信号，同时避免在每一步重复完整人格造成上下文膨胀。初始步骤若不是主人消息（例如子 Agent 或系统触发）不会启用 RP 提醒。
+模型跳过 prepare、prepare 与其他工具并列、`off`、persona 读取失败、Code Mode/嵌套调用或无法证明下一请求工具为空时，Coordinator fail closed：不排队 refresh、不安装 gate、不事后改写，短对话由初始 profile best-effort 完成。限制与 voice 都从 durable tool/result meta、`user/message`、assistant、surface replacement 和 inbox splice 重建；prepare 已记录且 initial 已 neutralized 而 final 未完成的进程重启会恢复空工具 gate，歧义时 fail closed 保留 DSH 普通工具能力，不用 step/token/自然语言猜测 finality。
 
 ```text
-DSH 系统提示词（minimal / standard / 其他预设）
-  → MistyMoon RP 快照（plugin source，可重建）
-  → 当前真实用户请求
+DSH 系统提示词（minimal / standard / 其他预设，保持不变）
+  → 真实 owner message
+  → 同 turn 唯一 active mistymoon:turn-voice（短对话兜底，轻量）
+  → 中间请求：业务 tools 与任务，复用同一条 profile，无新投影
+  → mistymoon_prepare_final_reply（唯一 tool call）
+  → turn-voice 替换为 neutral superseded record
+  → 单次无工具 final 请求：唯一 active mistymoon:final-voice-refresh
+  → final assistant 完成后 refresh 替换为 neutral consumed record，工具恢复
 ```
 
-RP 展示等级与 DSH 能力模式正交：`off` 不投影，`companion` 只投影身份、关系和自然语言语气，`immersive` 投影完整人格。三种等级都不改变 Agent 预设、协作模式、Plan、工具、权限、模型路由或安全规则。RP 快照明确规定 Coding、调试、研究和工具调用保持 DSH 行为与技术准确性，不角色化代码、命令、计划、诊断和技术决策。等级选择写入当前 DSH 会话日志，可用 `/rp` 命令查看和切换。
+RP 展示等级与 DSH 能力模式正交：`off` 两条路径都不注入，`companion` 提供简洁身份、关系和自然语言语气，`immersive` 的完整 persona/reference dialog 只允许出现在合法 final refresh。三种等级都不改变 Agent 预设、协作模式、Plan、工具、权限、模型路由或安全规则。voice 文本明确规定 Coding、调试、研究和工具调用保持 DSH 行为与技术准确性，不角色化代码、命令、计划、诊断和技术决策。等级选择写入当前 DSH 会话日志，可用 `/rp` 命令查看和切换。
 
 角色卡导入也归 Foundation 管理；任何导入结果先成为私有草稿，不能自动发布。设置页只提交生命周期操作，不自行拼接提示词。
 
