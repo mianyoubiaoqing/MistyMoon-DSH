@@ -40,4 +40,15 @@ describe('the installable MistyMoon repository bundle', () => {
       '@mistymoon/dsh/memory',
     ])
   })
+
+  it('declares the official tools and system-prompt capabilities the two-phase delivery coordinator consumes', async () => {
+    const manifest = JSON.parse(await readFile(`${workspaceRoot}/packages/foundation/package.json`, 'utf8')) as {
+      peerDependencies?: Record<string, string>
+    }
+
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-tools'])
+      .toBe('>=0.1.0-rc.5 <0.1.0')
+    expect(manifest.peerDependencies?.['@deepseek-ai/dsh-system-prompt'])
+      .toBe('>=0.1.0-rc.5 <0.1.0')
+  })
 })

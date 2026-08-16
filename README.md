@@ -22,8 +22,8 @@ MistyMoon 不是单纯的聊天 UI 或通用记忆数据库，而是 DSH 上的 
 - 设置页将编辑保存为不参与对话的草稿，可预览模型可见人格；只有明确点击发布后才会从下一次请求开始生效，并可回滚到旧活动版本。
 - 安装或升级插件不会覆盖用户已经修改的人格。
 - 真实人格只保存在用户的 DSH Home，不会进入本仓库或 npm 包。
-- RP 与 DSH Agent 预设和协作模式相互独立。`minimal`、标准、Plan、权限和工具配置均保持原样；人格作为带来源的会话消息在真实用户请求前投影，不覆盖 DSH 系统提示词。长任务的后续工具步骤会重复一条精简语气提醒，降低上下文增长造成的最终回复人格漂移。
-- 每个会话可使用 `/rp off`、`/rp companion` 或 `/rp immersive` 选择展示等级；默认 `companion`，Coding 场景不会把代码、命令、计划、诊断或技术决策角色化。
+- RP 与 DSH Agent 预设和协作模式相互独立。`minimal`、标准、Plan、权限和工具配置均保持原样；人格永不进入 system prompt。每个启用 RP 的真实 owner turn 都会在真实 owner message 后记录一条受字段预算约束的 `mistymoon:turn-voice` output-presentation profile，只包含 `Speaker label`、`Relationship register` 和 `Voice traits` 结构化字段；它的 `Activation` 只允许在本次 response 无 tool call 且结束 owner turn 时应用。长任务完成后，模型可以唯一 tool call 调用 `mistymoon_prepare_final_reply`，Foundation 先把 active initial profile 替换为 neutral superseded record，再为紧随其后的单个无工具 final 请求排队一条更完整的 `mistymoon:final-voice-refresh`；任一 provider request 最多一个 active voice profile。final、取消或出错后 active surface 只替换为纯事实的 lifecycle record，不留下任何现在或未来的禁止/命令，raw events 保留。模型跳过 prepare 时直接以初始 profile 完成，不做事后改写或二次生成。初始 profile 预算由 Foundation 配置 `turnVoiceMaxChars` 控制，默认 `1200` 字符，且最小值必须容纳完整 mandatory block。
+- 每个会话可使用 `/rp off`、`/rp companion` 或 `/rp immersive` 选择展示等级；默认 `companion`，`off` 完全关闭两条路径，Coding 场景不会把代码、命令、计划、诊断或技术决策角色化。
 
 ### 长期记忆
 
@@ -190,7 +190,7 @@ pnpm check
 - [x] 明确记忆的追加式保存、纠正、遗忘和审计历史
 - [x] 候选记忆的提议、批准、拒绝和设置页审核
 - [x] RP 展示等级与 DSH 预设/协作模式正交，兼容 `minimal` 且不覆盖 Coding、工具、权限和安全规则
-- [x] 长任务每个后续模型步骤注入可审计的精简语气提醒，避免完整人格在长上下文中被稀释
+- [x] 互斥双阶段输出画像：每个 owner turn 一条受字段预算的 turn-voice profile 兜底，合法 finalization 后先 neutral superseded 再启用一条 final-voice-refresh，任一请求 active profile 不超过一
 - [x] 人格草稿、精确预览、显式发布、并发覆盖保护和版本回滚
 - [x] Character Card V1/V2/V3 JSON 的不可信输入解析、未知字段保留和私有草稿模型
 - [x] Character Card 草稿预览、字段映射 UI，以及带大小/路径/压缩比限制的 PNG/APNG、CHARX 容器解析；详见 [导入设计](docs/persona-import.md)

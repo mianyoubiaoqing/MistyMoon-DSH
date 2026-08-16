@@ -41,7 +41,7 @@
 
 ## 人格与记忆规则
 
-- DSH 的系统提示词、Agent 预设、协作模式、工具、权限和安全规则始终优先且不得由 RP 覆盖。人格只以带来源的插件消息在 `agent/pre-step` 中投影：首步完整快照紧邻当前用户消息，后续工具步骤只追加精简语气提醒；两者都不能修改代码、命令、计划、诊断或技术决策。
+- DSH 的系统提示词、Agent 预设、协作模式、工具、权限和安全规则始终优先且不得由 RP 覆盖。人格采用互斥双阶段输出画像：每个启用 RP 的 owner turn 在真实 owner message 后记录一条受字段预算的 `mistymoon:turn-voice` profile，activation 只约束无 tool call 且结束 owner turn 的 response；模型以唯一 tool call 调用 `mistymoon_prepare_final_reply` 后，Foundation 先把 initial surface 替换为 neutral superseded record，再为紧随其后的单个无工具请求记录 `mistymoon:final-voice-refresh`。任一 provider request 最多一个 active voice profile；lifecycle replacement 只陈述历史事实，不含现在或未来的命令与禁止。不得按 assistant/tool step 生成新 capsule、continuation 或 anchor，不得做事后改写或二次生成，人格也不能修改代码、命令、计划、诊断或技术决策。
 - RP 展示等级与 DSH 模式正交：`off` 完全关闭，`companion` 只提供简洁身份与语气，`immersive` 提供完整人格。切换 RP 不得复制或改写 Agent 预设。
 - 人格编辑先形成草稿；预览通过后才发布为活动版本。导入内容永远不能自动覆盖活动人格。
 - 记忆默认采用候选审核制。明确的“请记住”可以按产品设置直接确认，自动抽取、批量导入和冲突内容不得默认批准。
