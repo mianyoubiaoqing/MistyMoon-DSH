@@ -1,0 +1,23 @@
+{
+  "name": "@mistymoon/dsh-work-agent",
+  "version": "0.0.1-rc2",
+  "description": "Governed one-shot Work Agent contracts for MistyMoon on DSH",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "files": [
+    "lib",
+    "presets"
+  ],
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
+  }
+}

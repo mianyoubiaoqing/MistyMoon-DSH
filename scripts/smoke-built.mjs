@@ -8,7 +8,10 @@ import { CallId, LlmAdapter, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import * as Identity from '../packages/identity/lib/index.js'
 import * as Foundation from '../packages/foundation/lib/index.js'
+import * as WorkAgent from '../packages/work-agent/lib/index.js'
+import * as WorkAgentDsh from '../packages/work-agent-dsh/lib/index.js'
 
 // dsh-agent-loop is a Foundation test dependency, not a root dependency. Resolve
 // it from the built Foundation package's own dependency graph.
@@ -16,6 +19,24 @@ const foundationUrl = pathToFileURL(join(process.cwd(), 'packages/foundation/lib
 const foundationRequire = createRequire(foundationUrl)
 const AgentRegistry = (await import('@deepseek-ai/dsh-agent')).default
 const AgentLoop = (await import(pathToFileURL(foundationRequire.resolve('@deepseek-ai/dsh-agent-loop')).href)).default
+
+if (typeof WorkAgent.SharedBaselineRegistry !== 'function'
+  || typeof WorkAgent.WorkPresetResolver !== 'function'
+  || typeof WorkAgent.CompatibilityGate !== 'function'
+  || typeof WorkAgent.prepareWorkActivationPublication !== 'function'
+  || typeof WorkAgent.configuredWorkRouteId !== 'function') {
+  throw new Error('built Work Agent contract exports are incomplete')
+}
+if (typeof WorkAgentDsh.createFreshWorkActivation !== 'function'
+  || typeof WorkAgentDsh.createFixedWorkPresetProvider !== 'function'
+  || typeof WorkAgentDsh.createGovernedWorkPresetProvider !== 'function'
+  || typeof WorkAgentDsh.loadWorkModelRouteSettings !== 'function'
+  || typeof WorkAgentDsh.saveWorkModelRouteSettings !== 'function') {
+  throw new Error('built DSH Work Agent adapter exports are incomplete')
+}
+if (typeof Identity.DshOwnerEligibilityService !== 'function') {
+  throw new Error('built Identity service export is missing')
+}
 
 class ScriptedAdapter extends LlmAdapter {
   requests = []
@@ -98,6 +119,7 @@ async function makeContext(adapter, home) {
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
+  await ctx.plugin(Identity, { ownerId: 'owner-fixture' })
   ctx.llm.registerAdapter(['mock'], adapter)
   ctx.tools.register(defineContentToolFixture({
     name: 'echo',
@@ -123,7 +145,10 @@ function waitForIdle(ctx, agent) {
 }
 
 function send(agent, text) {
-  agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+  agent.followup(createUserMessage({
+    content: [{ type: 'text', text }],
+    source: { kind: 'user', rpcId: `rpc-${text}` },
+  }))
 }
 
 const requestText = (request) => request.messages.flatMap(message => message.content)

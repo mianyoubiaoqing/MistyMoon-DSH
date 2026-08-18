@@ -119,8 +119,18 @@ interface LiveAgentState {
   armed?: ArmedRefresh
 }
 
+/** Consumer-owned narrow port implemented by the shared Identity Cordis service. */
+export interface PersonaOwnerEligibility {
+  /** Select only authenticated Owner messages from one proposed step batch. */
+  ownerMessages(agent: Agent, messages: readonly UserMessage[]): readonly UserMessage[]
+  /** Decide whether the latest open durable turn can authorize Owner governance. */
+  evaluateCurrentTurn(agent: Agent): { readonly eligible: boolean }
+}
+
 /** Configuration owned by the coordinator. */
 export interface PersonaTurnDeliveryConfig {
+  /** Shared deployment authority; Foundation never interprets identity facts itself. */
+  ownerEligibility: PersonaOwnerEligibility
   /** RP level for sessions with no owner selection. */
   defaultMode: RoleplayMode
   /** Absolute path of the user-owned active persona document. */
@@ -129,6 +139,8 @@ export interface PersonaTurnDeliveryConfig {
   turnVoiceMaxChars: number
   /** Neutral diagnostic sink; defaults to a no-op for direct construction. */
   report?: (message: string) => void
+  /** Select the RP-preset system strategy; all other agents keep legacy delivery. */
+  deliveryStrategy?: (agent: Agent) => 'legacy-output-profile' | 'rp-host-system'
 }
 
 /** Stable fingerprint of a published persona: schema version plus content hash. */
@@ -310,6 +322,10 @@ export class PersonaTurnDeliveryCoordinator {
    * @returns The validated decision, possibly with a profile added or stale refreshes removed.
    */
   async beforeStep(agent: Agent, turn: number, decision: PreStepDecision): Promise<PreStepDecision> {
+    if (!this.usesLegacyDelivery(agent)) {
+      this.settle(agent)
+      return decision
+    }
     const state = this.stateFor(agent)
     if (decision.kind === 'reject') {
       this.expireStaleVoices(agent, turn, state)
@@ -330,6 +346,7 @@ export class PersonaTurnDeliveryCoordinator {
    * @param agent - Agent that just transitioned to `running`.
    */
   onAgentRunning(agent: Agent): void {
+    if (!this.usesLegacyDelivery(agent)) return
     const state = this.stateFor(agent)
     const prepared = this.latestArmedPrepare(agent)
     if (prepared === undefined || state.armed?.turn === prepared.turn) return
@@ -359,6 +376,8 @@ export class PersonaTurnDeliveryCoordinator {
   async prepare(exec: ToolRunContext): Promise<PrepareResult> {
     const agent = exec.agent
     if (agent === undefined || exec.parent !== undefined || exec.signal.aborted) return { status: 'refused' }
+    if (!this.usesLegacyDelivery(agent)) return { status: 'refused' }
+    if (!this.config.ownerEligibility.evaluateCurrentTurn(agent).eligible) return { status: 'refused' }
     const step = latestStepStart(agent)
     const assistant = step === undefined ? undefined : assistantForStep(agent, step)
     if (step === undefined || assistant === undefined) return { status: 'refused' }
@@ -451,6 +470,11 @@ export class PersonaTurnDeliveryCoordinator {
 
   private report(message: string): void {
     this.config.report?.(message)
+  }
+
+  /** RP Host owns a complete system Persona; every other preset keeps this coordinator. */
+  private usesLegacyDelivery(agent: Agent): boolean {
+    return (this.config.deliveryStrategy?.(agent) ?? 'legacy-output-profile') === 'legacy-output-profile'
   }
 
   /** Release one gate; the restriction disposer is idempotent and must not throw into lifecycle dispatch. */
@@ -638,7 +662,8 @@ export class PersonaTurnDeliveryCoordinator {
       state.capsuleTurn = turn
       return [...messages]
     }
-    const ownerIndex = messages.findIndex(message => message.source.kind === 'user')
+    const ownerMessages = this.config.ownerEligibility.ownerMessages(agent, messages)
+    const ownerIndex = messages.findIndex(message => ownerMessages.includes(message))
     if (ownerIndex < 0) return [...messages]
     const mode = foldRoleplayMode(agent.session.events, this.config.defaultMode)
     if (mode === 'off') {

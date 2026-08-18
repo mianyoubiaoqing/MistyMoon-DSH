@@ -4,17 +4,14 @@ import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-client-connection'
-import type { PersonaDocument } from '@mistymoon/dsh-foundation/persona-document'
+import type { PublishedPersonaProjection } from '@mistymoon/dsh-foundation'
 import {
   mapCharacterCardToPersona,
   parseCharacterCardPersonaMapping,
-  type CharacterCardImportDraft,
-  type CharacterCardPersonaMapping,
 } from '@mistymoon/dsh-foundation/character-card'
 import {
   decodeCharacterCardUploadBase64,
   parseCharacterCardFile,
-  type CharacterCardFilePreview,
 } from '@mistymoon/dsh-foundation/character-card-container'
 import {
   discardPersonaDraft,
@@ -23,20 +20,34 @@ import {
   readPersonaWorkspace,
   rollbackPersona,
   savePersonaDraft,
-  type PersonaVersionSummary,
 } from '@mistymoon/dsh-foundation/persona-workspace'
 import {
   DEFAULT_RECALL_LIMIT,
   loadMemoryRuntimeSettings,
   saveMemoryRuntimeSettings,
 } from '@mistymoon/dsh-memory/runtime-settings'
-import type { CompanionMemoryArchive, MemoryCandidate, MemoryRecord } from '@mistymoon/dsh-memory'
+import type {} from '@mistymoon/dsh-memory'
+import type { CompanionMemoryArchive, MemoryCandidate, MemoryRecord } from '@mistymoon/dsh-memory/contracts'
+import type {} from '@mistymoon/dsh-work-agent-dsh'
+import type {
+  CharacterCardPersonaMapping,
+  MistyMoonCharacterCardPreview,
+  MistyMoonSettingsSnapshot,
+  MistyMoonWorkModelSnapshot,
+} from './contracts.js'
+
+export * from './contracts.js'
 
 /** Cordis plugin name. */
 export const name = 'mistymoon-settings-ui'
 
 /** Host transport required by the local settings page. */
-export const inject = ['connection', 'mistymoonMemory']
+export const inject = [
+  'connection',
+  'mistymoonMemory',
+  'mistymoonPersonaProjection',
+  'mistymoonWorkDelegation',
+]
 
 /** Settings-page Host configuration. */
 export interface Config {
@@ -46,30 +57,6 @@ export interface Config {
 
 /** Runtime schema for the settings-page Host plugin. */
 export const Config: z<Config> = z.object({ home: z.string().required() })
-
-/** Private settings returned only to a same-origin loopback browser. */
-export interface MistyMoonSettingsSnapshot {
-  /** Editable draft when present, otherwise a copy of the active persona. */
-  persona: PersonaDocument
-  /** Persona currently projected into new model requests. */
-  activePersona: PersonaDocument
-  /** Whether `persona` is an unpublished draft. */
-  hasPersonaDraft: boolean
-  /** Exact immersive persona preview for the unpublished draft. */
-  personaPreview?: string
-  /** Newest-first rollback history. */
-  personaVersions: PersonaVersionSummary[]
-  recallLimit: number
-}
-
-/** Owner-facing Character Card parsing and mapping preview. */
-export interface MistyMoonCharacterCardPreview {
-  source: CharacterCardFilePreview['source']
-  draft: CharacterCardImportDraft
-  mapping: CharacterCardPersonaMapping
-  persona: PersonaDocument
-  warnings: string[]
-}
 
 function badRequest(message: string) {
   return { ok: false as const, error: { code: 'bad-request' as const, message, details: { issues: [] } } }
@@ -215,6 +202,36 @@ export async function rejectMistyMoonCandidate(
   return archive.rejectCandidate({ candidateId, sourceMessageId: `settings-ui:${requestId}` })
 }
 
+/** Read the live DSH model catalog and the credential-free Work selection. */
+export async function readMistyMoonWorkModel(ctx: Context): Promise<MistyMoonWorkModelSnapshot> {
+  return {
+    selection: ctx.mistymoonWorkDelegation.modelSettings(),
+    options: await ctx.mistymoonWorkDelegation.modelCatalog(),
+  }
+}
+
+/** Validate and save one Owner-selected DSH model reference for future Work children. */
+export async function configureMistyMoonWorkModel(
+  ctx: Context,
+  value: unknown,
+): Promise<MistyMoonWorkModelSnapshot> {
+  if (!exactObject(value, ['expectedRevision', 'model', 'ownerConfirmed', 'provider'])
+    || !Number.isSafeInteger(value.expectedRevision)
+    || typeof value.provider !== 'string'
+    || typeof value.model !== 'string'
+    || typeof value.ownerConfirmed !== 'boolean') {
+    throw new Error('MistyMoon Work model save expects revision, provider, model, and confirmation.')
+  }
+  await ctx.mistymoonWorkDelegation.configureModelRoute({
+    version: 1,
+    expectedRevision: value.expectedRevision as number,
+    provider: value.provider,
+    model: value.model,
+    ownerConfirmed: value.ownerConfirmed,
+  })
+  return readMistyMoonWorkModel(ctx)
+}
+
 function candidateDecision(value: unknown): { candidateId: string; requestId: string } | undefined {
   if (!exactObject(value, ['candidateId', 'requestId'])) return undefined
   if (typeof value.candidateId !== 'string' || value.candidateId.trim() === '') return undefined
@@ -224,6 +241,7 @@ function candidateDecision(value: unknown): { candidateId: string; requestId: st
 
 /** Mount the loopback-only RPC channel used by the MistyMoon browser bundle. */
 export function apply(ctx: Context, config: Config): void {
+  const personaProjection = ctx.get('mistymoonPersonaProjection', true) as PublishedPersonaProjection
   ctx.connection.rpc.handle('/mistymoon-settings', async (endpoint, payload) => {
     try {
       if (endpoint === 'read') {
@@ -244,6 +262,7 @@ export function apply(ctx: Context, config: Config): void {
           const value = endpoint === 'persona-publish'
             ? await publishMistyMoonPersona(config.home)
             : await discardMistyMoonPersona(config.home)
+          if (endpoint === 'persona-publish') personaProjection.replace(value.activePersona)
           return { ok: true, value }
         } catch (error) {
           return badRequest(error instanceof Error ? error.message : `MistyMoon ${endpoint} failed.`)
@@ -254,7 +273,9 @@ export function apply(ctx: Context, config: Config): void {
           return badRequest('MistyMoon persona rollback expects one versionId string.')
         }
         try {
-          return { ok: true, value: await rollbackMistyMoonPersona(config.home, payload.versionId) }
+          const value = await rollbackMistyMoonPersona(config.home, payload.versionId)
+          personaProjection.replace(value.activePersona)
+          return { ok: true, value }
         } catch (error) {
           return badRequest(error instanceof Error ? error.message : 'MistyMoon persona rollback failed.')
         }
@@ -285,6 +306,17 @@ export function apply(ctx: Context, config: Config): void {
           return { ok: true, value }
         } catch (error) {
           return badRequest(error instanceof Error ? error.message : 'MistyMoon candidate decision failed.')
+        }
+      }
+      if (endpoint === 'work-model-read') {
+        if (!exactObject(payload, [])) return badRequest('MistyMoon Work model read expects an empty object.')
+        return { ok: true, value: await readMistyMoonWorkModel(ctx) }
+      }
+      if (endpoint === 'work-model-save') {
+        try {
+          return { ok: true, value: await configureMistyMoonWorkModel(ctx, payload) }
+        } catch (error) {
+          return badRequest(error instanceof Error ? error.message : 'MistyMoon Work model selection failed.')
         }
       }
       return badRequest('Unknown MistyMoon settings operation.')

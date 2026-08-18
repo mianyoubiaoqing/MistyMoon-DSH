@@ -14,6 +14,8 @@ import LlmRuntime, {
 import SessionStore, { SessionId, SessionPreparation, type Session } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture, type ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { DshOwnerEligibilityService } from '@mistymoon/dsh-identity'
+import * as IdentityPlugin from '@mistymoon/dsh-identity'
 import { describe, expect, it } from 'vitest'
 import * as FoundationPlugin from '../src/index.js'
 import {
@@ -69,6 +71,10 @@ async function writePersona(root: string, persona: PersonaDocument = NEUTRAL_PER
   return path
 }
 
+function ownerEligibility(): DshOwnerEligibilityService {
+  return new DshOwnerEligibilityService({ ownerId: 'owner-fixture' })
+}
+
 async function coordinatorHarness(persona: PersonaDocument = NEUTRAL_PERSONA, defaultMode: 'companion' | 'immersive' = 'companion') {
   const home = await mkdtemp(join(tmpdir(), 'mistymoon-turn-delivery-'))
   const personaPath = await writePersona(home, persona)
@@ -89,6 +95,7 @@ async function coordinatorHarness(persona: PersonaDocument = NEUTRAL_PERSONA, de
   }))
   const agent = ctx.agentLoop.create(SessionId(`coordinator-${crypto.randomUUID()}`), { provider: 'mock', model: 'mock' })
   const coordinator = new PersonaTurnDeliveryCoordinator({
+    ownerEligibility: ownerEligibility(),
     defaultMode,
     personaPath,
     turnVoiceMaxChars: DEFAULT_TURN_VOICE_MAX_CHARS,
@@ -97,10 +104,27 @@ async function coordinatorHarness(persona: PersonaDocument = NEUTRAL_PERSONA, de
 }
 
 function ownerMessage(text: string): UserMessage {
-  return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })
+  return createUserMessage({
+    content: [{ type: 'text', text }],
+    source: { kind: 'user', rpcId: `rpc-${text}` } as UserMessage['source'],
+  })
+}
+
+function ensureTurnStarted(agent: Agent, turn: number): void {
+  const active = [...agent.session.events].reverse().find(event =>
+    event.type === 'turn/start' || event.type === 'turn/end')
+  if (active?.type === 'turn/start' && active.data.turn === turn) return
+  agent.session.append('turn/start', { turn })
 }
 
 function appendStepWithCalls(agent: Agent, turn: number, step: number, calls: readonly { rawId: string; name: string }[]): void {
+  ensureTurnStarted(agent, turn)
+  const hasOwner = agent.session.events.some(event => event.type === 'user/message'
+    && event.data.source.kind === 'user'
+    && 'rpcId' in event.data.source)
+  if (!hasOwner) {
+    agent.session.append('user/message', ownerMessage(`tool-owner-${turn}`), { surfaceOp: 'append' })
+  }
   agent.session.append('step/start', { turn, step })
   agent.session.append('assistant/message', {
     turn,
@@ -168,6 +192,7 @@ async function arm(coordinator: PersonaTurnDeliveryCoordinator, agent: Agent, tu
 }
 
 function appendMessages(agent: Agent, turn: number, step: number, messages: readonly UserMessage[]): void {
+  ensureTurnStarted(agent, turn)
   agent.session.append('step/start', { turn, step })
   for (const message of messages) {
     agent.session.append('user/message', message, { surfaceOp: 'append' })
@@ -200,6 +225,7 @@ function currentProjectionCount(agent: Agent, projection: VoiceProjection): numb
 describe('PersonaTurnDeliveryCoordinator', () => {
   it('rejects an invalid capsule budget at construction', () => {
     expect(() => new PersonaTurnDeliveryCoordinator({
+      ownerEligibility: ownerEligibility(),
       defaultMode: 'companion',
       personaPath: join(tmpdir(), 'unused.json'),
       turnVoiceMaxChars: MIN_TURN_VOICE_MAX_CHARS - 1,
@@ -239,6 +265,7 @@ describe('PersonaTurnDeliveryCoordinator', () => {
     if (repeated.kind !== 'enter') throw new Error('unreachable')
     expect(repeated.messages).toHaveLength(1)
     const replacement = new PersonaTurnDeliveryCoordinator({
+      ownerEligibility: ownerEligibility(),
       defaultMode: 'companion',
       personaPath: (await coordinatorHarness()).personaPath,
       turnVoiceMaxChars: DEFAULT_TURN_VOICE_MAX_CHARS,
@@ -248,6 +275,35 @@ describe('PersonaTurnDeliveryCoordinator', () => {
     if (replayed.kind !== 'enter') throw new Error('unreachable')
     expect(replayed.messages).toHaveLength(1)
     expect(eventsWithProjection(agent, 'turn-voice')).toBe(1)
+  })
+
+  it('does not project Persona into a depth-one child prompt shaped as user input', async () => {
+    const { ctx, coordinator } = await coordinatorHarness()
+    const handle = await ctx.agents.create({
+      sessionId: SessionId(`coordinator-child-${crypto.randomUUID()}`),
+      meta: { origin: 'subagent', delegationDepth: 1 },
+      agentOptions: { provider: 'mock', model: 'mock' },
+    })
+    const childPrompt = createUserMessage({
+      content: [{ type: 'text', text: 'Delegated coding task.' }],
+      source: { kind: 'user', rpcId: 'rpc-shape-is-not-enough' } as UserMessage['source'],
+    })
+
+    const decision = await coordinator.beforeStep(handle.agent, 1, {
+      kind: 'enter',
+      messages: [childPrompt],
+    })
+
+    expect(decision).toEqual({ kind: 'enter', messages: [childPrompt] })
+    if (decision.kind !== 'enter') throw new Error('unreachable')
+    expect(eventsWithProjection(handle.agent, 'turn-voice')).toBe(0)
+    appendMessages(handle.agent, 1, 1, decision.messages)
+    appendStepWithCalls(handle.agent, 1, 2, [{ rawId: 'child-prepare', name: FINAL_REPLY_TOOL }])
+    const prepare = prepareCall(handle.agent)
+    expect(await coordinator.prepare(prepare.exec)).toEqual({ status: 'refused' })
+    expect(prepare.deferred).toEqual([])
+    expect(eventsWithProjection(handle.agent, 'final-voice-refresh')).toBe(0)
+    await handle.dispose()
   })
 
   it('keeps the immersive initial capsule small and reserves full reference dialog for the refresh', async () => {
@@ -278,6 +334,7 @@ describe('PersonaTurnDeliveryCoordinator', () => {
     await ctx.plugin(AgentLoop, { agents: [] })
     const agent = ctx.agentLoop.create(SessionId(`coordinator-off-${crypto.randomUUID()}`), { provider: 'mock', model: 'mock' })
     const coordinator = new PersonaTurnDeliveryCoordinator({
+      ownerEligibility: ownerEligibility(),
       defaultMode: 'off',
       personaPath: join(home, 'persona-does-not-exist.json'),
       turnVoiceMaxChars: DEFAULT_TURN_VOICE_MAX_CHARS,
@@ -313,6 +370,7 @@ describe('PersonaTurnDeliveryCoordinator', () => {
     }))
     const agent = ctx.agentLoop.create(SessionId(`coordinator-missing-${crypto.randomUUID()}`), { provider: 'mock', model: 'mock' })
     const coordinator = new PersonaTurnDeliveryCoordinator({
+      ownerEligibility: ownerEligibility(),
       defaultMode: 'companion',
       personaPath: join(home, 'persona-missing.json'),
       turnVoiceMaxChars: DEFAULT_TURN_VOICE_MAX_CHARS,
@@ -407,7 +465,12 @@ describe('PersonaTurnDeliveryCoordinator', () => {
     }))
     const agent = ctx.agentLoop.create(SessionId(`coordinator-invalid-${crypto.randomUUID()}`), { provider: 'mock', model: 'mock' })
     appendStepWithCalls(agent, 1, 1, [{ rawId: 'prepare', name: FINAL_REPLY_TOOL }])
-    const coordinator = new PersonaTurnDeliveryCoordinator({ defaultMode: 'companion', personaPath, turnVoiceMaxChars: DEFAULT_TURN_VOICE_MAX_CHARS })
+    const coordinator = new PersonaTurnDeliveryCoordinator({
+      ownerEligibility: ownerEligibility(),
+      defaultMode: 'companion',
+      personaPath,
+      turnVoiceMaxChars: DEFAULT_TURN_VOICE_MAX_CHARS,
+    })
     const call = prepareCall(agent)
 
     await expect(coordinator.prepare(call.exec)).rejects.toThrow(/Final reply preparation failed/)
@@ -536,6 +599,7 @@ describe('PersonaTurnDeliveryCoordinator', () => {
     }))
     const adapter = new ScriptedAdapter([textResponse('code mode direct final')])
     ctx.llm.registerAdapter(['mock'], adapter)
+    await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
     await ctx.plugin(FoundationPlugin, { home, defaultRoleplayMode: 'companion' })
     const agent = ctx.agentLoop.create(SessionId(`code-mode-${crypto.randomUUID()}`), { provider: 'mock', model: 'mock' })
 
@@ -555,6 +619,7 @@ describe('PersonaTurnDeliveryCoordinator', () => {
 
     appendStepWithCalls(agent, 2, 1, [{ rawId: 'prepare', name: FINAL_REPLY_TOOL }])
     const coordinator = new PersonaTurnDeliveryCoordinator({
+      ownerEligibility: ownerEligibility(),
       defaultMode: 'companion',
       personaPath: join(home, 'persona.json'),
       turnVoiceMaxChars: DEFAULT_TURN_VOICE_MAX_CHARS,
@@ -666,6 +731,7 @@ async function resumeHarness(refresh: 'logged' | 'inbox' | 'none', viaOfficialRe
       return [{ type: 'text', text: `echo: ${String(args.text)}` }]
     },
   }))
+  await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
   await ctx.plugin(FoundationPlugin, { home, defaultRoleplayMode: 'companion', turnVoiceMaxChars: DEFAULT_TURN_VOICE_MAX_CHARS })
   const adapter = new ScriptedAdapter([textResponse('resumed final reply')])
   ctx.llm.registerAdapter(['mock'], adapter)

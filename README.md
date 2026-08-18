@@ -22,7 +22,9 @@ MistyMoon 不是单纯的聊天 UI 或通用记忆数据库，而是 DSH 上的 
 - 设置页将编辑保存为不参与对话的草稿，可预览模型可见人格；只有明确点击发布后才会从下一次请求开始生效，并可回滚到旧活动版本。
 - 安装或升级插件不会覆盖用户已经修改的人格。
 - 真实人格只保存在用户的 DSH Home，不会进入本仓库或 npm 包。
-- RP 与 DSH Agent 预设和协作模式相互独立。`minimal`、标准、Plan、权限和工具配置均保持原样；人格永不进入 system prompt。每个启用 RP 的真实 owner turn 都会在真实 owner message 后记录一条受字段预算约束的 `mistymoon:turn-voice` output-presentation profile，只包含 `Speaker label`、`Relationship register` 和 `Voice traits` 结构化字段；它的 `Activation` 只允许在本次 response 无 tool call 且结束 owner turn 时应用。长任务完成后，模型可以唯一 tool call 调用 `mistymoon_prepare_final_reply`，Foundation 先把 active initial profile 替换为 neutral superseded record，再为紧随其后的单个无工具 final 请求排队一条更完整的 `mistymoon:final-voice-refresh`；任一 provider request 最多一个 active voice profile。final、取消或出错后 active surface 只替换为纯事实的 lifecycle record，不留下任何现在或未来的禁止/命令，raw events 保留。模型跳过 prepare 时直接以初始 profile 完成，不做事后改写或二次生成。初始 profile 预算由 Foundation 配置 `turnVoiceMaxChars` 控制，默认 `1200` 字符，且最小值必须容纳完整 mandatory block。
+- 人格投影按 Agent preset 分流。专用 `mistymoon-rp-host-v1` 使用完整已发布 Persona 的受保护 system persona slot，允许 `web_search` / `web_fetch`，并直接完成 Owner-facing 回复；实际 system 文本由 DSH `request/header` 记录，因此仍可从会话日志重建。该 preset 不叠加 turn-voice/final-voice-refresh，也不暴露 `mistymoon_prepare_final_reply`。其他通用 preset 保持原有互斥双阶段输出画像：每个真实 owner turn 一条受预算的 `mistymoon:turn-voice`，合法 prepare 后原子切换为一次 `mistymoon:final-voice-refresh`，任一请求最多一个 active profile。
+- RP Host 的 Persona 不改变 DSH Harness identity、安全、权限、协作模式、工具规则和 Owner 当前请求。Web 只读不需要额外确认；登录、提交、上传、购买、公开发布等外部副作用仍须能力 gate 和 Owner 确认。编码、修改、长研究和审查交给中性 Work child，child 不继承 Persona、父 transcript、关系记忆或 final-reply。
+- Work child 发布后使用 DSH rc.7 原生子 Agent 目录和只读会话页向 Owner 展示已落日志的完整工程过程；导航绑定准确的父/子 Session 与 one-shot mode，不新增全 workspace transcript API，也不把 child 内容召回到 RP、人格或长期记忆。
 - 每个会话可使用 `/rp off`、`/rp companion` 或 `/rp immersive` 选择展示等级；默认 `companion`，`off` 完全关闭两条路径，Coding 场景不会把代码、命令、计划、诊断或技术决策角色化。
 
 ### 长期记忆
@@ -41,6 +43,7 @@ MistyMoon 不是单纯的聊天 UI 或通用记忆数据库，而是 DSH 上的 
 - 可导入 Character Card V1/V2/V3 JSON、PNG/APNG 和 CHARX，在字段映射与人格差异预览后保存为未发布草稿。
 - 角色卡的系统提示词和场景映射默认关闭；Creator Notes、问候、世界书、扩展和未知字段不会自动进入人格或模型上下文。
 - 可在页面中批准或拒绝候选记忆。
+- 可从 DSH 当前已注册、且支持 `max` reasoning 的模型目录中选择后续 Work child 使用的 provider/model。MistyMoon 只保存引用，不复制 API Key、Base URL、余额或账号配置；非默认 exact pair 会明确标为 experimental，并以保存操作作为 Owner 确认。
 - Host API 只允许本机回环来源访问，避免私有人格和记忆通过普通远程页面暴露。
 
 ### 旧版数据迁移
@@ -58,13 +61,20 @@ MistyMoon 通过 DSH 原生插件扩展点实现功能：
 DeepSeek Harness
 ├─ Agent、会话、工具、权限与 Web Runtime
 └─ MistyMoon RP 插件套件
+   ├─ identity       Owner Eligibility 与通道认证适配
    ├─ foundation     私有人格生命周期与会话级 RP 投影
    ├─ memory         长期记忆、候选审核与召回
    ├─ settings-ui    本机设置和候选记忆审核页面
+   ├─ work-agent     低耦合的共享基线、固定预设解析与兼容性合同
+   ├─ work-agent-dsh 唯一的 DSH child lifecycle Adapter
    └─ installer      开发预览安装器
 ```
 
-记忆插件只维护一个进程级档案实例。Agent 工具、召回流程与设置页共同使用该实例，避免多个进程内视图同时写入同一份 JSONL 文件。DSH 会话保存原始对话和模型可见投影，MistyMoon 记忆档案只保存经过选择的跨会话事实。
+Identity 插件先于 Foundation 和 Memory 装载，只把通过 `source.kind=user`、顶层 delegation depth 与当前通道认证三项校验的消息认定为 Owner。当前 `local-dsh-host-rpc` authority 只覆盖默认回环 Web 单 Owner 部署；child、无 Host RPC 证据的消息和未来未适配通道全部 fail closed。记忆插件只维护一个进程级档案实例。Agent 工具、召回流程与设置页共同使用该实例，避免多个进程内视图同时写入同一份 JSONL 文件。DSH 会话保存原始对话和模型可见投影，MistyMoon 记忆档案只保存经过选择的跨会话事实。
+
+`work-agent` 提供零 DSH 运行时依赖的共享基线、固定 preset 和 profile revision 合同；`work-agent-dsh` 是唯一的 DSH lifecycle Adapter。当前实现已在 rc.7 中性临时 Home 验证 fresh depth-one Anchored child、保护段、工具面、模型可见日志与失败回滚，并实现已资格化的 Flash/max 前台 provider、跨 RP Host 的同 workspace 串行租约和“只影响下一次 fresh activation”的 profile controller。Routing Suite 不属于目标基线，J-Space 仍为 not-ready 实验项。Flash/max 独立样例 15/15 后，Owner 接受 Flash-only 首发并由 `cordis.patch.yml` 加载；后续批次虽保留了 Pro/max 15/15，但未批准发布专用 Pro 工具，且暴露 Flash 稳定性证据缺口，因此不会自动选择 Pro 或发起付费复核。若 Owner 已在 DSH 配置 Pro，通用设置页仍可把该 exact pair 作为明确确认的 experimental 模型使用。
+
+Work child 的部署默认模型可在 **设置 → 插件 → MistyMoon** 中选择。页面从 DSH 的实时 provider/model catalog 读取选项，只展示能够解析 `max` reasoning 的已注册模型；默认仍是已资格化的 `deepseek-official / deepseek-v4-flash`。选择 OpenCode Go、Pro 或任意其他非默认 exact pair 时，保存即表示 Owner 确认 experimental 使用及可能消耗所选提供商的套餐额度/余额，且只影响之后创建的 fresh child；运行中 child 不重绑。route 缺失、region、额度或协议错误均直接失败，不自动 fallback。OpenCode Go 的条款、供应商数据保留政策与套餐风险应在选择前向供应商独立核对。
 
 详细模块职责、外部记忆 Provider 和安全边界见 [架构说明](docs/architecture.md)；开发与 Agent 协作遵循 [AGENTS.md](AGENTS.md)。
 
@@ -74,10 +84,13 @@ DeepSeek Harness
 
 | 组件 | DSH 加载名或入口 | 职责 |
 | --- | --- | --- |
+| Identity | `@mistymoon/dsh/identity` | 统一 Owner Eligibility、顶层 delegation gate 与当前回环 Web authority |
 | Foundation | `@mistymoon/dsh/foundation` | 私有人格生命周期、RP 等级、会话级人格投影、Character Card 解析和字段映射 |
 | Memory | `@mistymoon/dsh/memory` | 长期记忆档案、候选审核、召回快照和记忆工具 |
 | Settings UI Host | `@mistymoon/dsh` | 本机回环 RPC、人设草稿/发布/回滚、角色卡导入和记忆审核 |
 | Settings UI Client | `@mistymoon/dsh/client` | DSH Web 中的 MistyMoon 设置页面 |
+| Work Agent Contracts | `@mistymoon/dsh/work-agent` | Phase 0 的共享基线、固定 Work Preset 解析与兼容性决策；当前不是运行时插件 |
+| DSH Work Agent Adapter | `@mistymoon/dsh/work-agent-dsh` | Anchored fresh child、已资格化 Flash/max provider、workspace lease、next-activation profile 与发布前重校验；由 bundle 自动注册 |
 | Bundle Patch | `cordis.patch.yml` | 将以上运行时插件组合进 DSH Profile |
 | Preview Installer | `@mistymoon/dsh-installer` | 源码开发预览和本机安装辅助，不是常驻运行时插件 |
 
@@ -87,25 +100,27 @@ DeepSeek Harness
 
 - Node.js `^22.19.0 || >=24.0.0`
 - pnpm `11.7.0`
-- DeepSeek Harness `0.1.0-rc.6`
+- DeepSeek Harness `0.1.0-rc.7`
 
 ## 安装到 DSH
 
 当前候选版本建议从源码构建并通过 DSH 官方插件命令安装：
 
+将下列 `<MISTYMOON_REPO>`、`<DSH_REPO>` 和 `<LEGACY_MEMORY_DB>` 替换为自己的仓库或数据库路径；示例不记录维护者本机目录。
+
 ```powershell
-cd D:\ai\MistyMoon-DSH
+cd <MISTYMOON_REPO>
 pnpm install
 pnpm build
 
-cd D:\ai\deepseek-harness
-pnpm dsh plugin --profile web add D:\ai\MistyMoon-DSH
+cd <DSH_REPO>
+pnpm dsh plugin --profile web add <MISTYMOON_REPO>
 pnpm dsh --profile web
 ```
 
 DSH 负责生成和维护 Web Profile。MistyMoon 不会手工修改 DSH 仓库或 Profile 的 `package.json`。
 
-MistyMoon 不要求专用 Agent 预设。可在任意 DSH 预设和协作模式中用 `/rp` 查看当前 RP 等级；需要纯 DSH Coding 体验时使用 `/rp off`，需要轻量陪伴语气时使用默认的 `/rp companion`，完整 RP 使用 `/rp immersive`。
+MistyMoon 的完整长期陪伴体验使用专用 `mistymoon-rp-host-v1`；其他 DSH 预设仍可通过 `/rp` 使用原有轻量输出画像。需要纯 DSH Coding 体验时使用 `/rp off`，需要轻量陪伴语气时使用默认的 `/rp companion`，完整 RP 使用 `/rp immersive`。RP preset 与 Work preset 的首次 provision、升级和回滚都必须先预览并由 Owner 确认。
 
 若端口 `3080` 已被其他 DSH 进程占用，可以停止旧进程，或为新实例指定其他端口：
 
@@ -134,13 +149,13 @@ pnpm preview:start -- --port 3081
 先只读预览，不修改源数据库和目标档案：
 
 ```powershell
-pnpm preview:migrate-memory -- D:\path\to\legacy.db
+pnpm preview:migrate-memory -- <LEGACY_MEMORY_DB>
 ```
 
 确认统计结果和警告后，再显式导入：
 
 ```powershell
-pnpm preview:migrate-memory -- D:\path\to\legacy.db --apply
+pnpm preview:migrate-memory -- <LEGACY_MEMORY_DB> --apply
 ```
 
 ## 私有数据与开源边界
@@ -162,7 +177,9 @@ mistymoon/
 │  ├─ draft.json（仅在存在未发布草稿时）
 │  └─ versions/（活动人格的回滚历史）
 ├─ memory/memories.jsonl
-└─ settings/settings.json
+└─ settings/
+   ├─ settings.json
+   └─ work-model.json（仅保存 provider/model 引用与 revision）
 ```
 
 发布前必须运行：
@@ -186,11 +203,12 @@ pnpm check
 
 ### P0：RP 连续性、记忆可靠性与治理
 
+- [x] 统一 Owner Eligibility：Foundation/Memory 共享顶层与通道认证门，child 不触发人格、记忆或治理工具
 - [x] 版本化私有人格、关系规则、参考对话与回复预算
 - [x] 明确记忆的追加式保存、纠正、遗忘和审计历史
 - [x] 候选记忆的提议、批准、拒绝和设置页审核
 - [x] RP 展示等级与 DSH 预设/协作模式正交，兼容 `minimal` 且不覆盖 Coding、工具、权限和安全规则
-- [x] 互斥双阶段输出画像：每个 owner turn 一条受字段预算的 turn-voice profile 兜底，合法 finalization 后先 neutral superseded 再启用一条 final-voice-refresh，任一请求 active profile 不超过一
+- [x] 通用 preset 的互斥双阶段输出画像：每个 owner turn 一条受字段预算的 turn-voice profile，合法 finalization 后原子切换为一条 final-voice-refresh，任一请求 active profile 不超过一；RP Host 专用完整 Persona system projection 由 P1 单独实现
 - [x] 人格草稿、精确预览、显式发布、并发覆盖保护和版本回滚
 - [x] Character Card V1/V2/V3 JSON 的不可信输入解析、未知字段保留和私有草稿模型
 - [x] Character Card 草稿预览、字段映射 UI，以及带大小/路径/压缩比限制的 PNG/APNG、CHARX 容器解析；详见 [导入设计](docs/persona-import.md)
@@ -202,7 +220,20 @@ pnpm check
 - [ ] BM25、PageIndex 与图关系融合召回，以及可解释的召回结果
 - [ ] 候选记忆的编辑、合并和不含敏感载荷的操作审计
 
-### P1：陪伴与通信
+### P1：RP Agent、体验模式与通信
+
+> 前三项已按 Owner 接受的 Flash-only 首发范围完成并接入 bundle：Flash/max 曾完成一批 5×3、15/15。后续稳定性批次中 Pro/max 为 15/15，但 Flash 批次总门未通过且中段脱敏结果未被宿主完整保留；因此不自动扩大到 Pro，Flash 也不被描述为长期质量保证。精确复核在首例后再次耗尽额度；公开发布前需用可恢复 case-resume 补齐稳定性证据。
+
+- [x] 注册 RP 专用 Agent 预设：RP Host Agent 使用完整已发布 Persona、只读 Web、风险确认与已资格化 Flash 委派工具；Work Agent 负责编码、研究、审查和规则分析，通用 preset 保留既有 final-reply 路径；详见 [委派设计](specs/011-rp-agent-delegation/SPEC.md)
+- [x] Work Agent 默认使用固定 Anchored Standard 编码层，保留 durable 工具阶段；Routing Suite 不作为产品依赖，J-Space 仅作为复杂任务的 child-only skill/ledger 并保持实验门
+- [x] 基于 DSH child 设计可切换 Work Agent：创建时选择完整、版本化的 Work Preset；logical switch 只影响下一次 fresh one-shot activation，共享不可变治理基线而不共享 RP transcript；同 Session native switch 等待 DSH 上游接口；详见 [工程架构](specs/014-switchable-work-agent/SPEC.md)
+- [x] Phase 0 DSH Adapter：在 rc.7 中性临时 Home 下验证 Anchored-only provision、restart discovery、独立 composition、空 seed、真实 header/request/tool surface、模型可见日志和 publication 前回滚，以及不自动注册的 fixed/governed one-shot provider 的共享 baseline、发布点重校验、取消和 dispose；尚不等于产品 provider
+- [x] 设置页读取 DSH 实时模型目录并保存后续 Work child 的 exact provider/model 引用；非默认 route 要求 Owner 确认、固定 `max` reasoning、不可用时 fail closed 且不 fallback
+- [ ] 扩展 DSH 模型 route：Flash/high、Flash/max、Pro/max 的官方 Adapter wire 请求及禁用/缺失 fail-loud 已捕获，Flash/max 产品 route 已注册；Pro 与其他 DSH provider 仍需独立资格门，不使用提示词伪造思维链
+- [ ] 将 Experience Mode 与 `/rp off|companion|immersive`、DSH 协作模式分离：`companion-chat`、`character-scene`、`tabletop-campaign`
+- [ ] 类酒馆 Character Scene：独立 Scene Role、场景正史、分支与虚构记忆范围，不覆盖长期陪伴 Persona
+- [ ] 桌面跑团：RP Host 主持、可审计骰子、规则 Adapter、Campaign Branch 与原子 Canon commit；详见 [体验模式设计](specs/013-roleplay-experience-modes/SPEC.md)
+- [ ] 按 [RP 长期记忆目标架构](specs/012-rp-memory-architecture/SPEC.md) 隔离现实关系、角色场景和战役记忆，并建立可解释召回评测
 
 - [ ] NapCat/QQ Channel Adapter
 - [ ] MistyMoon 启动时启动 NapCat，并提供健康检查、重连和受控关闭

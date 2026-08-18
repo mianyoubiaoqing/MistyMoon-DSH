@@ -51,4 +51,25 @@ describe('auditPublication', () => {
       'credential-content',
     ])
   })
+
+  it('rejects machine-specific local paths without rejecting neutral fixtures', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-public-local-path-'))
+    const localWorkspace = ['D:', 'ai', 'MistyMoon-DSH'].join('\\')
+    const localHome = ['', 'Users', 'actual-owner', 'project'].join('/')
+    const files = ['docs/windows.md', 'docs/macos.md', 'dist/client.js.map', 'tests/fixture.md']
+    await Promise.all([
+      stage(root, files[0]!, `workspace: ${localWorkspace}\n`),
+      stage(root, files[1]!, `workspace: ${localHome}\n`),
+      stage(root, files[2]!, JSON.stringify({ sources: [localWorkspace] })),
+      stage(root, files[3]!, 'fixtures: C:\\Users\\Owner and C:\\Program Files\\nodejs\\node.exe\n'),
+    ])
+
+    const issues = await auditPublication({ root, files })
+
+    expect(issues.map(issue => [issue.code, issue.path])).toEqual([
+      ['local-path-content', 'docs/windows.md'],
+      ['local-path-content', 'docs/macos.md'],
+      ['local-path-content', 'dist/client.js.map'],
+    ])
+  })
 })

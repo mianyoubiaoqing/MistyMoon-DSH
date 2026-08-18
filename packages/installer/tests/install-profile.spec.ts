@@ -34,7 +34,7 @@ describe('installProfile', () => {
 
     expect(result).toEqual({
       dshHome,
-      dshVersion: '0.1.0-rc.6',
+      dshVersion: '0.1.0-rc.7',
       profileDir: join(dshHome, 'profiles', 'web'),
     })
     const manifest = JSON.parse(await readFile(join(result.profileDir, 'package.json'), 'utf8')) as {
@@ -51,8 +51,12 @@ describe('installProfile', () => {
     expect(Object.keys(manifest.dependencies ?? {})).toEqual(['@mistymoon/dsh'])
     await expect(readFile(join(result.profileDir, 'node_modules', '@mistymoon', 'dsh', 'cordis.patch.yml'), 'utf8'))
       .resolves.toContain("name: '@mistymoon/dsh/foundation'")
+    await expect(readFile(join(result.profileDir, 'node_modules', '@mistymoon', 'dsh', 'packages', 'identity', 'lib', 'index.js'), 'utf8'))
+      .resolves.toContain('mistymoon-identity')
     await expect(readFile(join(result.profileDir, 'node_modules', '@mistymoon', 'dsh', 'packages', 'memory', 'lib', 'index.js'), 'utf8'))
       .resolves.toContain('mistymoon-memory')
+    await expect(readFile(join(result.profileDir, 'node_modules', '@mistymoon', 'dsh', 'packages', 'work-agent-dsh', 'lib', 'index.js'), 'utf8'))
+      .resolves.toContain('createFreshWorkActivation')
 
     const ownerPatch = '# owner override\n[]\n'
     const personaPath = join(dshHome, 'mistymoon', 'persona', 'persona.json')
@@ -64,7 +68,7 @@ describe('installProfile', () => {
 
     await expect(readFile(join(result.profileDir, 'cordis.patch.yml'), 'utf8')).resolves.toBe(ownerPatch)
     await expect(readFile(personaPath, 'utf8')).resolves.toBe('{"owner":"private"}\n')
-  }, 60_000)
+  }, 240_000)
 })
 
 describe('dumpProfile', () => {
@@ -75,8 +79,9 @@ describe('dumpProfile', () => {
     const output = await dumpProfile({ workspaceRoot, dshHome })
 
     expect(output).toContain('id: mistymoon-foundation')
+    expect(output).toContain('id: mistymoon-identity')
     expect(output).toContain("name: '@mistymoon/dsh/foundation'")
-  }, 60_000)
+  }, 120_000)
 })
 
 describe('smokeProfile', () => {
@@ -91,5 +96,5 @@ describe('smokeProfile', () => {
       kind?: string
     }
     expect(persona.kind).toBe('mistymoon.persona')
-  }, 60_000)
+  }, 120_000)
 })

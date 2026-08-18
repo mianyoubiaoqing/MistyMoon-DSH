@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "id": "neutral-worldbook-v1",
+  "revision": 3,
+  "hardBudgetTokens": 96,
+  "entries": [
+    {
+      "id": "always-harbor",
+      "enabled": true,
+      "activation": { "kind": "always" },
+      "priority": 100,
+      "order": 10,
+      "position": "before-scene",
+      "depth": 0,
+      "content": "Fixture canon: the harbor has three numbered piers."
+    },
+    {
+      "id": "keyword-ferry",
+      "enabled": true,
+      "activation": { "kind": "keyword", "keys": ["ferry", "schedule"] },
+      "priority": 80,
+      "order": 20,
+      "position": "after-scene",
+      "depth": 1,
+      "content": "Fixture canon: schedules must be checked from a cited source."
+    },
+    {
+      "id": "regex-pier",
+      "enabled": true,
+      "activation": { "kind": "regex", "pattern": "\\bpier\\s+[1-3]\\b", "flags": "i" },
+      "priority": 60,
+      "order": 30,
+      "position": "at-depth",
+      "depth": 2,
+      "content": "Fixture canon: pier numbers are fictional scope identifiers."
+    }
+  ]
+}

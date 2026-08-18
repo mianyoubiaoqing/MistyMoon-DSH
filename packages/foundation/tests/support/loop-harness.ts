@@ -9,6 +9,7 @@ import LlmRuntime, { createUserMessage, type GenerateOptions } from '@deepseek-a
 import SessionStore, { Session, SessionId, foldRequestHeader, type SessionEvent } from '@deepseek-ai/dsh-session'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
+import * as IdentityPlugin from '@mistymoon/dsh-identity'
 import { expect } from 'vitest'
 import * as FoundationPlugin from '../../src/index.js'
 import type { PersonaDocument } from '../../src/index.js'
@@ -77,6 +78,7 @@ export async function loopHarness(
   await ctx.plugin(ToolRuntime)
   await ctx.plugin(AgentRegistry)
   await ctx.plugin(AgentLoop, { agents: [] })
+  await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
   ctx.llm.registerAdapter(['mock'], adapter)
   ctx.tools.register(defineContentToolFixture({
     name: 'echo',
@@ -114,7 +116,10 @@ export function waitForIdle(ctx: Context, agent: Agent): Promise<void> {
 }
 
 export function send(agent: Agent, text: string): void {
-  agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } }))
+  agent.followup(createUserMessage({
+    content: [{ type: 'text', text }],
+    source: { kind: 'user', rpcId: `rpc-${text}` } as ReturnType<typeof createUserMessage>['source'],
+  }))
 }
 
 /** Durable user/message events carrying one voice projection. */

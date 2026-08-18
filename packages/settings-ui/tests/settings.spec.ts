@@ -2,14 +2,18 @@ import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
+import type { Context } from '@deepseek-ai/cordis'
 import { initializePersona } from '@mistymoon/dsh-foundation/persona-home'
 import { openMemoryArchive } from '@mistymoon/dsh-memory'
+import { RpWorkDelegationRuntime } from '@mistymoon/dsh-work-agent-dsh'
 import {
   applyMistyMoonCharacterCard,
   approveMistyMoonCandidate,
+  configureMistyMoonWorkModel,
   publishMistyMoonPersona,
   readMistyMoonCandidates,
   readMistyMoonSettings,
+  readMistyMoonWorkModel,
   rejectMistyMoonCandidate,
   saveMistyMoonSettings,
   previewMistyMoonCharacterCard,
@@ -110,5 +114,68 @@ describe('MistyMoon settings Host API', () => {
       expect.objectContaining({ content: '主人周末会整理书桌。', sourceCandidateId: approvedCandidate.id }),
     ])
     expect(archive.recall({ query: '凌晨四点' })).toEqual([])
+  })
+
+  it('lists and saves only credential-free Work models registered in DSH', async () => {
+    const llm = {
+      listProviders: () => [
+        { id: 'deepseek-official', name: 'DeepSeek' },
+        { id: 'opencode-go', name: 'OpenCode Go' },
+      ],
+      listModels: async (provider: string) => provider === 'opencode-go'
+        ? [
+            { provider, id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' },
+            { provider, id: 'chat-only', name: 'Chat Only' },
+          ]
+        : [{ provider, id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash' }],
+      resolveCallConfig: async (config: { model: string }) => {
+        if (config.model === 'chat-only') throw new Error('UNSUPPORTED_REASONING_EFFORT')
+        return config
+      },
+    }
+    const runtime = new RpWorkDelegationRuntime({ llm } as unknown as Context)
+    const ctx = { mistymoonWorkDelegation: runtime } as unknown as Context
+
+    const before = await readMistyMoonWorkModel(ctx)
+    expect(before.options).toEqual([
+      expect.objectContaining({
+        provider: 'deepseek-official',
+        model: 'deepseek-v4-flash',
+        qualification: 'qualified-direct',
+      }),
+      expect.objectContaining({
+        provider: 'opencode-go',
+        model: 'deepseek-v4-flash',
+        qualification: 'experimental-owner-configured',
+      }),
+    ])
+    expect(JSON.stringify(before)).not.toMatch(/apiKey|credential|baseURL|balance/i)
+
+    await expect(configureMistyMoonWorkModel(ctx, {
+      expectedRevision: 1,
+      provider: 'opencode-go',
+      model: 'deepseek-v4-flash',
+      ownerConfirmed: false,
+    })).rejects.toThrow(/Owner confirmation/)
+    await expect(configureMistyMoonWorkModel(ctx, {
+      expectedRevision: 1,
+      provider: 'opencode-go',
+      model: 'deepseek-v4-flash',
+      ownerConfirmed: true,
+      apiKey: 'must-not-cross-the-boundary',
+    })).rejects.toThrow(/revision, provider, model, and confirmation/)
+
+    await expect(configureMistyMoonWorkModel(ctx, {
+      expectedRevision: 1,
+      provider: 'opencode-go',
+      model: 'deepseek-v4-flash',
+      ownerConfirmed: true,
+    })).resolves.toMatchObject({
+      selection: {
+        revision: 2,
+        provider: 'opencode-go',
+        model: 'deepseek-v4-flash',
+      },
+    })
   })
 })

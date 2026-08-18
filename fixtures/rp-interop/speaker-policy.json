@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "policyRevision": 4,
+  "participants": [
+    { "id": "guide", "visibility": "scene", "weight": 3 },
+    { "id": "curator", "visibility": "scene", "weight": 2 },
+    { "id": "private-observer", "visibility": "owner-only", "weight": 1 }
+  ],
+  "cases": [
+    { "mode": "manual", "input": { "speakerId": "curator" }, "activeSpeakerId": "curator", "reason": "owner-selected" },
+    { "mode": "mention", "input": { "text": "Guide, please check." }, "activeSpeakerId": "guide", "reason": "explicit-mention" },
+    { "mode": "ordered", "input": { "previousSpeakerId": "guide" }, "activeSpeakerId": "curator", "reason": "next-visible-participant" },
+    { "mode": "weighted", "input": { "seed": "neutral-seed-17" }, "activeSpeakerId": "guide", "reason": "deterministic-weighted-selection" }
+  ],
+  "maxActiveSpeakersPerRequest": 1,
+  "excludedFromSceneReceipts": ["private-observer"]
+}

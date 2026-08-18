@@ -1,9 +1,13 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/identity" },
     { "path": "./packages/foundation" },
     { "path": "./packages/installer" },
-    { "path": "./packages/memory" }
-    ,{ "path": "./packages/settings-ui" }
+    { "path": "./packages/memory" },
+    { "path": "./packages/settings-ui" },
+    { "path": "./packages/settings-ui/tsconfig.client.json" },
+    { "path": "./packages/work-agent" },
+    { "path": "./packages/work-agent-dsh" }
   ]
 }

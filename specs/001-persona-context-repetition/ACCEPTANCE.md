@@ -1,5 +1,12 @@
 # 001 验收标准：互斥双阶段输出画像
 
+## 0. Preset 策略分流
+
+- `mistymoon-rp-host-v1` 的请求含完整已发布 Persona 的 `deployment:persona`，且 `request/header.system` 可重建实际文本。
+- RP Host 请求与工具目录不含 turn-voice、final-voice-refresh 或 `mistymoon_prepare_final_reply`。
+- 同一 Foundation 进程中的非 RP preset 仍通过本文其余全部双阶段验收；RP Host 的启用与卸载不得改变它们。
+- child、伪造 header、自称 RP Host 或非 Owner turn 均不能启用 RP Host system projection。
+
 本文件取代旧版“每请求固定 anchor”和“prepare-only、skip 时零人格”的验收标准。除明确标为真实模型或用户手工 Review 的项目外，结果必须可机械验证。测试只使用中性生成 persona、临时目录和 deterministic Adapter。
 
 ## 1. 修复前回归与保留测试
