@@ -21,6 +21,11 @@
         path: !!js dshHomePath('mistymoon', 'memory', 'memories.jsonl')
         recallLimit: 8
         settingsPath: !!js dshHomePath('mistymoon', 'settings', 'settings.json')
+        leaseTimeoutMs: 30000
+        leaseStaleMs: 120000
+        disposeTimeoutMs: 5000
+        maxArchiveBytes: 67108864
+        maxTransactionBytes: 1048576
 
     - id: mistymoon-work-agent-runtime
       name: '@mistymoon/dsh/work-agent-dsh'

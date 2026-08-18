@@ -2,7 +2,7 @@
 
 MistyMoon 是一套以角色扮演（Roleplay，简称 RP）和长期陪伴为核心的 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 外置插件。项目保留 MistyMoon 的人格、关系、长期记忆与陪伴体验，同时复用 DSH 的 Agent Runtime、会话、工具、权限和 Web 插件体系，不修改 DSH 源码，也不重复实现 Agent Loop。
 
-> 当前公开版本为 `0.0.1-rc2`，仍处于候选发布阶段。请先在本地测试环境中使用，并保留私有数据备份。
+> 当前版本为 `0.0.1-rc.5`，仍处于候选发布阶段。请先在本地测试环境中使用，并保留私有数据备份。
 
 ## 产品定位
 
@@ -29,7 +29,9 @@ MistyMoon 不是单纯的聊天 UI 或通用记忆数据库，而是 DSH 上的 
 
 ### 长期记忆
 
-- 识别“请记住……”等明确请求，并写入私有的追加式 JSONL 档案。
+- 识别“请记住……”等明确请求，并写入私有的 v2 事务式 JSONL 档案。
+- 每个逻辑变更只写入一条带摘要链的事务；跨进程 lease、写前重读、文件落盘和相邻 checkpoint 防止并发丢失及完整尾事务被静默删除。
+- v1 档案必须先显式 plan/apply 迁移；损坏档案进入 quarantine，不参与召回，也不阻断普通 DSH 工作。
 - 按 DSH 消息 ID 去重，避免同一条消息被重复记忆。
 - 召回内容以带来源的 DSH 消息写入会话，因此实际发送给模型的上下文可以从会话日志重建。
 - 支持列出、纠正和遗忘记忆；旧值保留在审计历史中，但不会继续参与召回。
@@ -158,6 +160,18 @@ pnpm preview:migrate-memory -- <LEGACY_MEMORY_DB>
 pnpm preview:migrate-memory -- <LEGACY_MEMORY_DB> --apply
 ```
 
+已有 v1 JSONL 档案使用本机维护 CLI。所有命令默认只读；`apply` 必须使用刚生成、尚未过期且绑定 exact digest 的 token：
+
+```powershell
+pnpm memory:maintenance -- inspect <MEMORY_ARCHIVE>
+pnpm memory:maintenance -- plan-migrate <MEMORY_ARCHIVE> [BACKUP_PATH]
+pnpm memory:maintenance -- plan-recover <MEMORY_ARCHIVE> [BACKUP_PATH]
+pnpm memory:maintenance -- apply <MEMORY_ARCHIVE> <PLAN_TOKEN> <EXPECTED_DIGEST>
+pnpm memory:maintenance -- rehearse-rollback <MEMORY_ARCHIVE> <BACKUP_PATH> <EXPECTED_BACKUP_DIGEST>
+```
+
+尾部半事务使用 `plan-recover`；内部损坏只返回无正文的 `restore-required`，不会自动跳过。默认最多保留 20 个自动命名 backup，达到上限后要求 Owner 先处理，不会自动删除。`rehearse-rollback` 只读校验当前 v2 与 exact v1 backup，实际恢复仍需停写后由 Owner 执行。Windows 会完成 exact backup、文件 fsync、原子替换、checkpoint 和重开校验，但 Node 不支持目录句柄 fsync，因此突然断电恰好发生在 rename 窗口时可能需要从备份恢复。真实档案的任何 `apply` 仍需 Owner 单独确认。
+
 ## 私有数据与开源边界
 
 仓库只发布插件代码、中性人格模板和示例人格。以下内容被发布审计和 `.gitignore` 排除：
@@ -216,7 +230,7 @@ pnpm check
 - [ ] 冲突检测与替代链：发现矛盾时要求主人选择，接受新值后以墓碑和 `supersedes` 保留旧值
 - [ ] 记忆整合、衰减、归档与恢复
 - [ ] 专用记忆管理页：搜索、筛选、批量审核和来源查看
-- [ ] 为记忆日志增加版本化迁移、文件锁、原子写入和损坏恢复工具
+- [x] 为记忆日志增加 v2 事务格式、跨进程 lease、显式迁移、checkpoint、quarantine 和尾部损坏恢复工具
 - [ ] BM25、PageIndex 与图关系融合召回，以及可解释的召回结果
 - [ ] 候选记忆的编辑、合并和不含敏感载荷的操作审计
 

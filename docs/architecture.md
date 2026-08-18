@@ -91,7 +91,9 @@ Character Card 导入由 Host 解析 V1/V2/V3 JSON、PNG/APNG `tEXt` 块和 CHAR
 
 ## Memory
 
-Memory 当前使用追加式 JSONL 档案：新事实、纠正、遗忘和审核决定都是新记录。活动视图由历史投影得到；纠正不改写旧值，遗忘记录保留审计但不再召回。
+Memory 使用 v2 事务式 JSONL 档案：新事实、纠正、遗忘和审核决定都是不可变 domain events，一个逻辑 mutation 只占一条 hash-linked transaction。活动视图由完整事务重放得到；纠正不改写旧值，遗忘记录保留审计但不再召回。生产 writer 通过跨进程 lease 在写前重读，文件 append 与 fsync 成功后更新相邻 durability checkpoint，最后才发布进程内 snapshot。
+
+v1 档案不会自动升级，而以 `migration-required` fail closed；非法 JSON、摘要链、领域状态或 checkpoint 进入 `quarantined`。写入使用跨进程 file lease，lease 内重读；append、fsync、重放、checkpoint 与 release 全部完成后才发布内存 snapshot，timeout、compromise 或 release failure 均显式失败。本机 maintenance seam 使用 inspect/plan/apply 两步协议，绑定 exact digest、过期 token 和 exact backup；只允许迁移有效 v1 或裁剪最后完整事务之后的 partial tail，内部损坏只生成 `restore-required`，并提供只读 rollback rehearsal。自动命名 backup 达到保留上限时拒绝继续创建，不自动删除。Windows 采用 Owner 已接受的文件 fsync + atomic rename + reopen 契约；Node 不支持目录 fsync，因此报告相应的断电窗口而不虚构更强 durability。
 
 自动召回挂在 `agent/pre-step`，由 MistyMoon 根据当前会话和所有者范围选择正式记忆，再以带来源的 DSH 消息写入会话。模型不需要记得主动调用工具，工具也不能绕过审核状态直接读取底层档案。
 

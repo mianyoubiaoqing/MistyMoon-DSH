@@ -2,10 +2,22 @@ import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, expect, it } from 'vitest'
-import { dumpProfile, installProfile, resolvePreviewHome, smokeProfile } from '../src/index.js'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { dumpProfile, installProfile, packProfileBundle, resolvePreviewHome, smokeProfile } from '../src/index.js'
 
 const workspaceRoot = fileURLToPath(new URL('../../..', import.meta.url))
+let sharedBundleArchive: string
+let sharedInstalledHome: string
+
+beforeAll(async () => {
+  const bundleRoot = await mkdtemp(join(tmpdir(), 'mistymoon-installer-bundle-'))
+  sharedBundleArchive = await packProfileBundle({
+    workspaceRoot,
+    outputPath: join(bundleRoot, 'mistymoon-dsh.tgz'),
+  })
+  sharedInstalledHome = await mkdtemp(join(tmpdir(), 'mistymoon-dsh-shared-home-'))
+  await installProfile({ workspaceRoot, dshHome: sharedInstalledHome, bundleArchivePath: sharedBundleArchive })
+}, 180_000)
 
 describe('resolvePreviewHome', () => {
   it('uses an explicit private home before the dedicated Windows data directory', () => {
@@ -30,7 +42,7 @@ describe('installProfile', () => {
   it('installs the MistyMoon bundle through DSH profile management', async () => {
     const dshHome = await mkdtemp(join(tmpdir(), 'mistymoon-dsh-home-'))
 
-    const result = await installProfile({ workspaceRoot, dshHome })
+    const result = await installProfile({ workspaceRoot, dshHome, bundleArchivePath: sharedBundleArchive })
 
     expect(result).toEqual({
       dshHome,
@@ -64,7 +76,7 @@ describe('installProfile', () => {
     await mkdir(join(dshHome, 'mistymoon', 'persona'), { recursive: true })
     await writeFile(personaPath, '{"owner":"private"}\n', 'utf8')
 
-    await installProfile({ workspaceRoot, dshHome })
+    await installProfile({ workspaceRoot, dshHome, bundleArchivePath: sharedBundleArchive })
 
     await expect(readFile(join(result.profileDir, 'cordis.patch.yml'), 'utf8')).resolves.toBe(ownerPatch)
     await expect(readFile(personaPath, 'utf8')).resolves.toBe('{"owner":"private"}\n')
@@ -73,10 +85,7 @@ describe('installProfile', () => {
 
 describe('dumpProfile', () => {
   it('is parsed by the repository-pinned DSH runtime', async () => {
-    const dshHome = await mkdtemp(join(tmpdir(), 'mistymoon-dsh-dump-'))
-    await installProfile({ workspaceRoot, dshHome })
-
-    const output = await dumpProfile({ workspaceRoot, dshHome })
+    const output = await dumpProfile({ workspaceRoot, dshHome: sharedInstalledHome })
 
     expect(output).toContain('id: mistymoon-foundation')
     expect(output).toContain('id: mistymoon-identity')
@@ -86,13 +95,10 @@ describe('dumpProfile', () => {
 
 describe('smokeProfile', () => {
   it('activates the packed foundation through DSH without binding a web server', async () => {
-    const dshHome = await mkdtemp(join(tmpdir(), 'mistymoon-dsh-smoke-'))
-    await installProfile({ workspaceRoot, dshHome })
-
-    const output = await smokeProfile({ workspaceRoot, dshHome })
+    const output = await smokeProfile({ workspaceRoot, dshHome: sharedInstalledHome })
 
     expect(output).toContain('Usage: dsh --profile web')
-    const persona = JSON.parse(await readFile(join(dshHome, 'mistymoon', 'persona', 'persona.json'), 'utf8')) as {
+    const persona = JSON.parse(await readFile(join(sharedInstalledHome, 'mistymoon', 'persona', 'persona.json'), 'utf8')) as {
       kind?: string
     }
     expect(persona.kind).toBe('mistymoon.persona')

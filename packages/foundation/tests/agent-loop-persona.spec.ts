@@ -1,4 +1,5 @@
 import { CommandId } from '@deepseek-ai/dsh-commands'
+import type {} from '@deepseek-ai/dsh-agent-presets'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { describe, expect, it } from 'vitest'
@@ -98,6 +99,20 @@ function waitFor(condition: () => boolean, description: string): Promise<void> {
 }
 
 describe('real DSH Agent Loop with the two-phase profile delivery coordinator', () => {
+  it('does not inject a turn-voice capsule after the blank session durably selects the RP Host preset', async () => {
+    const adapter = new ScriptedAdapter([textResponse('direct RP Host reply')])
+    const { ctx } = await loopHarness(adapter, { foundation: true })
+    const agent = ctx.agentLoop.create(SessionId('rp-host-selected-after-creation'), { provider: 'mock', model: 'mock' })
+    agent.session.append('agent-preset/selected', { agentPreset: 'mistymoon-rp-host-v1' })
+
+    send(agent, 'RP Host owner message.')
+    await waitForIdle(ctx, agent)
+
+    expect(adapter.requests).toHaveLength(1)
+    expect(projectionCount(adapter.requests[0]!, 'turn-voice')).toBe(0)
+    expect(turnVoiceEvents(agent.session.events)).toHaveLength(0)
+  })
+
   it('keeps one initial profile across requests 1-10 and gives request 11 only the active refresh with empty tools', async () => {
     const script = [
       ...Array.from({ length: 9 }, (_, index) =>

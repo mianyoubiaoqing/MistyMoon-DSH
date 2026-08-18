@@ -36,6 +36,7 @@ describe('the installable MistyMoon repository bundle', () => {
       './identity',
       './memory',
       './memory/legacy-migration',
+      './memory/maintenance',
       './work-agent',
       './work-agent-dsh',
       './package.json',

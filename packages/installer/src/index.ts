@@ -42,6 +42,14 @@ export interface InstallProfileOptions {
   workspaceRoot: string
   /** Dedicated DSH home that will own the profile and all private runtime data. */
   dshHome: string
+  /** Optional immutable bundle prepared by the caller; omitted production previews build a fresh archive. */
+  bundleArchivePath?: string
+}
+
+/** Inputs for building one reusable immutable preview bundle. */
+export interface PackProfileBundleOptions {
+  workspaceRoot: string
+  outputPath: string
 }
 
 /** Stable locations and compatibility version produced by installation. */
@@ -108,6 +116,14 @@ async function requiredDshVersion(workspaceRoot: string): Promise<string> {
   return (await readJson<WorkspaceManifest>(join(workspaceRoot, 'package.json'))).devDependencies['@deepseek-ai/dsh']
 }
 
+/** Build the current workspace once into a caller-owned package archive. */
+export async function packProfileBundle(options: PackProfileBundleOptions): Promise<string> {
+  await mkdir(dirname(options.outputPath), { recursive: true })
+  await rm(options.outputPath, { force: true })
+  await run('pnpm', ['pack', '--out', options.outputPath], options.workspaceRoot)
+  return options.outputPath
+}
+
 /**
  * Build and install the current bundle through DSH's official profile manager.
  * DSH owns the Web profile manifest; the user's profile patch and all data
@@ -119,11 +135,9 @@ export async function installProfile(options: InstallProfileOptions): Promise<In
   const profileDir = join(options.dshHome, 'profiles', PROFILE_NAME)
   const dshVersion = await requiredDshVersion(options.workspaceRoot)
   const packageCache = join(options.dshHome, 'mistymoon', 'packages')
-  const bundleArchive = join(packageCache, 'mistymoon-dsh.tgz')
+  const bundleArchive = options.bundleArchivePath ?? join(packageCache, 'mistymoon-dsh.tgz')
   await mkdir(packageCache, { recursive: true })
-  await rm(bundleArchive, { force: true })
-
-  await run('pnpm', ['pack', '--out', bundleArchive], options.workspaceRoot)
+  if (options.bundleArchivePath === undefined) await packProfileBundle({ workspaceRoot: options.workspaceRoot, outputPath: bundleArchive })
 
   const dshPackageRoot = join(options.workspaceRoot, 'node_modules', '@deepseek-ai', 'dsh')
   const dshBin = join(dshPackageRoot, 'lib', 'bin.js')
