@@ -42,6 +42,7 @@ const RP_PRESET_SOURCE = fileURLToPath(new URL(
   import.meta.url,
 ))
 const RP_PRESET_ID = 'mistymoon-rp-host-v1'
+const INITIAL_PRESET_ID = 'code'
 
 const PERSONA = {
   schemaVersion: 2,
@@ -144,7 +145,7 @@ afterEach(() => {
 })
 
 describe('RP Host preset through a restarted headless DSH runtime', () => {
-  it('provisions, discovers, mounts, and records the preset-scoped Persona/Web/direct-reply surface', async () => {
+  it('provisions, selects after blank-session creation, and records the Persona system surface without legacy delivery', async () => {
     const dshHome = await mkdtemp(join(tmpdir(), 'mistymoon-rp-host-headless-'))
     vi.stubEnv('DSH_HOME', dshHome)
     const personaPath = join(dshHome, 'mistymoon-fixture', 'persona.json')
@@ -199,16 +200,19 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
       ownerFiber = runtimeCtx.inject(['agents', 'agentPresets'], (injectedCtx) => {
         handlePromise = injectedCtx.agents.create({
           sessionId: SessionId(`rp-host-${crypto.randomUUID()}`),
-          meta: { agentPreset: RP_PRESET_ID, cwd: process.cwd() },
+          meta: { agentPreset: INITIAL_PRESET_ID, cwd: process.cwd() },
           agentOptions: { provider: 'mock', model: 'fallback-model' },
           async setup(agentCtx) {
-            await injectedCtx.agentPresets.mount(agentCtx, RP_PRESET_ID)
+            await injectedCtx.agentPresets.mount(agentCtx, INITIAL_PRESET_ID)
           },
         })
       })
       await ownerFiber
       if (handlePromise === undefined) throw new Error('RP Host activation context did not start')
       handle = await handlePromise
+      expect(handle.agent.session.header.agentPreset).toBe(INITIAL_PRESET_ID)
+      const selected = await runtimeCtx.agentPresets.recompose(handle.agent.ctx, RP_PRESET_ID)
+      handle.agent.session.append('agent-preset/selected', { agentPreset: selected.id })
       handle.agent.followup(createUserMessage({
         content: [{ type: 'text', text: 'Give a neutral direct reply.' }],
         source: { kind: 'user' },
@@ -237,6 +241,7 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
       })
       expect(ownerRequests[0]?.system).toContain('You are Nova.')
       expect(handle.agent.session.requestHeader()).toMatchObject({
+        system: expect.stringContaining('You are Nova.'),
         config: {
           provider: 'deepseek-official',
           model: 'deepseek-v4-flash',

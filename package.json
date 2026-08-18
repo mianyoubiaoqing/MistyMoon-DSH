@@ -1,6 +1,6 @@
 {
   "name": "@mistymoon/dsh",
-  "version": "0.0.1-rc2",
+  "version": "0.0.1-rc.5",
   "description": "Long-term companion plugin suite for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
@@ -50,6 +50,10 @@
       "types": "./packages/memory/lib/legacy-migration.d.ts",
       "default": "./packages/memory/lib/legacy-migration.js"
     },
+    "./memory/maintenance": {
+      "types": "./packages/memory/lib/maintenance.d.ts",
+      "default": "./packages/memory/lib/maintenance.js"
+    },
     "./work-agent": {
       "types": "./packages/work-agent/lib/index.d.ts",
       "default": "./packages/work-agent/lib/index.js"
@@ -85,6 +89,7 @@
     "preview:dump": "tsx scripts/preview.ts dump",
     "preview:install": "tsx scripts/preview.ts install",
     "preview:migrate-memory": "tsx scripts/migrate-memory.ts",
+    "memory:maintenance": "tsx scripts/memory-maintenance.ts",
     "preview:smoke": "tsx scripts/preview.ts smoke",
     "preview:start": "tsx scripts/preview.ts start",
     "prepare": "pnpm run build",
@@ -95,47 +100,48 @@
     "check": "pnpm run typecheck && pnpm run test && pnpm run build && pnpm run smoke:built && pnpm run audit:publication"
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "3.18.1"
+    "@deepseek-ai/schemastery": "3.18.1",
+    "proper-lockfile": "4.1.2"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh-agent": ">=0.1.0-rc.7 <0.1.0",
     "@deepseek-ai/dsh-agent-presets": ">=0.1.0-rc.7 <0.1.0",
-    "@deepseek-ai/dsh-commands": ">=0.1.0-rc.7 <0.1.0",
-    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.7 <0.1.0",
-    "@deepseek-ai/dsh-session": ">=0.1.0-rc.7 <0.1.0",
-    "@deepseek-ai/dsh-scope": ">=0.1.0-rc.7 <0.1.0",
-    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.7 <0.1.0",
-    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.7 <0.1.0",
-    "@deepseek-ai/dsh-subagent": ">=0.1.0-rc.7 <0.1.0",
     "@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.7 <0.1.0",
     "@deepseek-ai/dsh-client-locale": ">=0.1.0-rc.7 <0.1.0",
     "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.7 <0.1.0",
     "@deepseek-ai/dsh-client-ui-settings": ">=0.1.0-rc.7 <0.1.0",
     "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.7 <0.1.0",
+    "@deepseek-ai/dsh-commands": ">=0.1.0-rc.7 <0.1.0",
+    "@deepseek-ai/dsh-llm": ">=0.1.0-rc.7 <0.1.0",
+    "@deepseek-ai/dsh-scope": ">=0.1.0-rc.7 <0.1.0",
+    "@deepseek-ai/dsh-session": ">=0.1.0-rc.7 <0.1.0",
+    "@deepseek-ai/dsh-subagent": ">=0.1.0-rc.7 <0.1.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.7 <0.1.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.0-rc.7 <0.1.0",
     "react": "^18.2.0"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.1",
     "@deepseek-ai/dsh": "0.1.0-rc.7",
     "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-commands": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-session": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-subagent": "0.1.0-rc.7",
     "@deepseek-ai/dsh-client-connection": "0.1.0-rc.7",
     "@deepseek-ai/dsh-client-locale": "0.1.0-rc.7",
     "@deepseek-ai/dsh-client-runtime": "0.1.0-rc.7",
     "@deepseek-ai/dsh-client-ui-settings": "0.1.0-rc.7",
     "@deepseek-ai/dsh-client-ui-slots": "0.1.0-rc.7",
-    "@types/react": "18.3.31",
+    "@deepseek-ai/dsh-commands": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-session": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-subagent": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-system-prompt": "0.1.0-rc.7",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.20.0",
+    "@types/react": "18.3.31",
     "js-yaml": "^4.2.0",
-    "tsx": "^4.22.4",
-    "typescript": "^6.0.3",
     "react": "18.3.1",
     "tsdown": "0.22.2",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.8"
   }
 }

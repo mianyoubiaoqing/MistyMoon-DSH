@@ -92,6 +92,10 @@ export interface MemoryRecall {
 
 /** Small interface hiding parsing, deduplication, ranking, and JSONL durability. */
 export interface CompanionMemoryArchive {
+  /** Return content-free storage health for local diagnostics and maintenance planning. */
+  inspection(): ArchiveInspection
+  /** Stop accepting commits and wait for already-started commits up to the configured bound. */
+  dispose(): Promise<void>
   /** Persist an explicit remember request, or return undefined for an ordinary message. */
   observeExplicit(input: ExplicitMemoryObservation): Promise<MemoryRecord | undefined>
   /** Return confirmed memories ranked for the supplied query. */
@@ -113,3 +117,4 @@ export interface CompanionMemoryArchive {
   /** Reject one pending candidate without making it recallable. */
   rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate>
 }
+import type { ArchiveInspection } from './storage/index.js'

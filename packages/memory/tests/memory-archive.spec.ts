@@ -1,10 +1,61 @@
-import { mkdtemp } from 'node:fs/promises'
+import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { openMemoryArchive } from '../src/index.js'
 
 describe('companion memory archive', () => {
+  it('serializes same-source writes across archive instances without corrupting restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-concurrent-source-'))
+    const path = join(root, 'memory.jsonl')
+    const first = await openMemoryArchive({
+      path,
+      createId: () => 'memory-from-first',
+      now: () => new Date('2026-08-18T10:00:00.000Z'),
+    })
+    const second = await openMemoryArchive({
+      path,
+      createId: () => 'memory-from-second',
+      now: () => new Date('2026-08-18T10:00:01.000Z'),
+    })
+
+    const results = await Promise.allSettled([
+      first.observeExplicit({ sourceMessageId: 'message-shared', text: '请记住：今天整理了中性测试夹具。' }),
+      second.observeExplicit({ sourceMessageId: 'message-shared', text: '请记住：今天复核了中性测试夹具。' }),
+    ])
+
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter(result => result.status === 'rejected')).toEqual([
+      expect.objectContaining({ reason: expect.objectContaining({ code: 'MEMORY_SOURCE_CONFLICT' }) }),
+    ])
+    const reopened = await openMemoryArchive({ path })
+    expect(reopened.list()).toHaveLength(1)
+  })
+
+  it('preserves one hundred concurrent mutations across archive instances', { timeout: 60_000 }, async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-concurrent-batch-'))
+    const path = join(root, 'memory.jsonl')
+    const archives = await Promise.all(Array.from({ length: 10 }, async (_, archiveIndex) => {
+      let sequence = 0
+      return openMemoryArchive({
+        path,
+        createId: () => `memory-${archiveIndex}-${sequence++}`,
+        now: () => new Date(`2026-08-18T10:${String(archiveIndex).padStart(2, '0')}:00.000Z`),
+      })
+    }))
+
+    await Promise.all(Array.from({ length: 100 }, async (_, index) => {
+      await archives[index % archives.length]!.observeExplicit({
+        sourceMessageId: `message-${index}`,
+        text: `请记住：中性并发事实编号 ${index}。`,
+      })
+    }))
+
+    const reopened = await openMemoryArchive({ path })
+    expect(reopened.list({ limit: 200 })).toHaveLength(100)
+    expect(reopened.inspection()).toMatchObject({ state: 'ready', transactionCount: 100, eventCount: 100 })
+  })
+
   it('deduplicates explicit memories by source message and recalls them after restart', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-'))
     const path = join(root, 'memory.jsonl')
@@ -131,6 +182,100 @@ describe('companion memory archive', () => {
     const reopened = await openMemoryArchive({ path })
     expect(reopened.listCandidates({ includeResolved: true })).toEqual([candidate])
     expect(reopened.recall({ query: '周末' })).toEqual([memory])
+  })
+
+  it('quarantines a partial approval transaction without applying any approval event', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-partial-approval-'))
+    const path = join(root, 'memory.jsonl')
+    const ids = ['candidate-1', 'memory-1', 'resolution-1']
+    const archive = await openMemoryArchive({
+      path,
+      createId: () => ids.shift() ?? 'unexpected-id',
+      now: () => new Date('2026-08-18T11:00:00.000Z'),
+    })
+    const candidate = await archive.propose({
+      sourceMessageId: 'proposal-1',
+      content: 'Owner 使用中性样例验证事务边界。',
+      visibility: 'personal',
+    })
+    await archive.approveCandidate({ candidateId: candidate.id, sourceMessageId: 'approval-1' })
+    const bytes = await readFile(path)
+    const lastLineStart = bytes.lastIndexOf(0x0a, bytes.length - 2) + 1
+    await writeFile(path, bytes.subarray(0, lastLineStart + Math.floor((bytes.length - lastLineStart) / 2)))
+
+    const reopened = await openMemoryArchive({ path })
+
+    expect(reopened.inspection()).toMatchObject({
+      state: 'quarantined',
+      issues: [{ code: 'trailing-partial-transaction' }],
+    })
+    expect(reopened.recall({ query: '事务边界' })).toEqual([])
+    expect(() => reopened.listCandidates({ includeResolved: true })).not.toThrow()
+    await expect(reopened.approveCandidate({ candidateId: candidate.id, sourceMessageId: 'approval-retry' }))
+      .rejects.toMatchObject({ code: 'MEMORY_ARCHIVE_QUARANTINED' })
+  })
+
+  it('classifies trailing and interior corruption without exposing archive content', async () => {
+    const cases = [
+      { suffix: 'trailing', damagedBytes: '{"transaction":', issue: 'trailing-partial-transaction' },
+      { suffix: 'interior', damagedBytes: '{not-json}\n', issue: 'interior-invalid-json' },
+    ] as const
+
+    for (const testCase of cases) {
+      const root = await mkdtemp(join(tmpdir(), `mistymoon-memory-${testCase.suffix}-`))
+      const path = join(root, 'memory.jsonl')
+      const ids = ['memory-1', 'transaction-1']
+      const archive = await openMemoryArchive({
+        path,
+        createId: () => ids.shift() ?? 'unexpected-id',
+        now: () => new Date('2026-08-18T12:00:00.000Z'),
+      })
+      await archive.observeExplicit({
+        sourceMessageId: 'message-1',
+        text: '请记住：这是不会出现在诊断中的中性正文。',
+      })
+      await appendFile(path, testCase.damagedBytes, 'utf8')
+
+      const reopened = await openMemoryArchive({ path })
+      const inspection = reopened.inspection()
+
+      expect(inspection).toMatchObject({ state: 'quarantined', issues: [{ code: testCase.issue }] })
+      expect(JSON.stringify(inspection)).not.toContain('不会出现在诊断中')
+    }
+  })
+
+  it('detects removal of a complete trailing transaction through its durability checkpoint', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-truncated-transaction-'))
+    const path = join(root, 'memory.jsonl')
+    const ids = ['memory-1', 'memory-2']
+    const archive = await openMemoryArchive({
+      path,
+      createId: () => ids.shift() ?? 'unexpected-id',
+      now: () => new Date('2026-08-18T13:00:00.000Z'),
+    })
+    await archive.observeExplicit({ sourceMessageId: 'message-1', text: '请记住：中性事实一。' })
+    await archive.observeExplicit({ sourceMessageId: 'message-2', text: '请记住：中性事实二。' })
+    const lines = (await readFile(path, 'utf8')).trimEnd().split(/\r?\n/u)
+    await writeFile(path, `${lines.slice(0, -1).join('\n')}\n`, 'utf8')
+
+    const reopened = await openMemoryArchive({ path })
+
+    expect(reopened.inspection()).toMatchObject({
+      state: 'quarantined',
+      issues: [{ code: 'checkpoint-mismatch' }],
+    })
+    expect(reopened.recall({ query: '中性事实' })).toEqual([])
+  })
+
+  it('rejects new mutations after bounded archive disposal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-dispose-'))
+    const path = join(root, 'memory.jsonl')
+    const archive = await openMemoryArchive({ path })
+
+    await archive.dispose()
+
+    await expect(archive.observeExplicit({ sourceMessageId: 'message-after-dispose', text: '请记住：不能写入。' }))
+      .rejects.toMatchObject({ code: 'MEMORY_ARCHIVE_DISPOSED' })
   })
 
   it('retains rejected candidates for audit without making them recallable', async () => {

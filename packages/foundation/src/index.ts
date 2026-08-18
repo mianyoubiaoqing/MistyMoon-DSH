@@ -6,6 +6,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
+import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-tools'
 import { fileURLToPath } from 'node:url'
@@ -55,8 +56,8 @@ const PERSONA_TEMPLATE = fileURLToPath(new URL('../personas/template/persona.jso
 /**
  * Initialize private first-start state, register the finalization tool, and
  * own owner-tail capsules and the prepared final-voice gate across pre-step,
- * turn-stopping, status, error, and disposal lifecycles. Persona never enters
- * a system-prompt section.
+ * turn-stopping, status, error, and disposal lifecycles. Only the dedicated
+ * RP Host preset replaces this legacy delivery with a system Persona section.
  * @param ctx - Mounting Cordis context with the agent lifecycle.
  * @param config - Private data directory and delivery configuration.
  */
@@ -71,7 +72,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     defaultMode,
     personaPath: initialized.path,
     turnVoiceMaxChars: config.turnVoiceMaxChars ?? DEFAULT_TURN_VOICE_MAX_CHARS,
-    deliveryStrategy: agent => agent.session.header.agentPreset === RP_HOST_PRESET_ID
+    deliveryStrategy: agent => resolveSessionPreset(agent.session) === RP_HOST_PRESET_ID
       ? 'rp-host-system'
       : 'legacy-output-profile',
     report: (message) => ctx.logger.warn(message),

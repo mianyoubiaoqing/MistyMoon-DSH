@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -111,5 +111,41 @@ describe('MistyMoon memory plugin', () => {
 
     expect(decision).toEqual({ kind: 'enter', messages: [childPrompt] })
     expect(ctx.mistymoonMemory.list()).toEqual([])
+  })
+
+  it('keeps the owner turn running while a v1 archive awaits explicit migration', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-migration-required-plugin-'))
+    const path = join(root, 'memory.jsonl')
+    await writeFile(path, `${JSON.stringify({
+      schemaVersion: 1,
+      id: 'legacy-memory-1',
+      createdAt: '2026-08-18T00:00:00.000Z',
+      content: '中性待迁移内容。',
+      visibility: 'personal',
+      sourceMessageId: 'legacy-source-1',
+      status: 'confirmed',
+    })}\n`, 'utf8')
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
+    await ctx.plugin(MemoryPlugin, { path, recallLimit: 4 })
+    const session = Session.create(SessionId('memory-migration-required-session'))
+    const agent = sessionAgent(session)
+    const ownerMessage = createUserMessage({
+      content: [{ type: 'text', text: '请记住：这次请求不能阻断普通工作。' }],
+      source: { kind: 'user', rpcId: 'rpc-migration-required' } as ReturnType<typeof createUserMessage>['source'],
+    })
+    session.append('turn/start', { turn: 1 })
+
+    const decision = await agentEvents(ctx, agent).waterfall(
+      'agent/pre-step',
+      { messages: [ownerMessage], turn: 1, step: 1, signal: new AbortController().signal },
+      () => Promise.resolve({ kind: 'enter' as const, messages: [ownerMessage] }),
+    )
+
+    expect(decision).toEqual({ kind: 'enter', messages: [ownerMessage] })
+    expect(ctx.mistymoonMemory.inspection()).toMatchObject({ state: 'migration-required' })
   })
 })

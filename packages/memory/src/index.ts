@@ -4,8 +4,6 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { appendFile, mkdir, readFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
@@ -28,6 +26,15 @@ import type {
   MemoryVisibility,
 } from './contracts.js'
 import { DEFAULT_RECALL_LIMIT, loadMemoryRuntimeSettings } from './runtime-settings.js'
+import {
+  MemoryArchiveError,
+  MemoryArchiveStorage,
+  type ArchiveInspection,
+  type FoldedMemoryState,
+  type MemoryCandidateResolutionEvent,
+  type MemoryForgottenEvent,
+  type SourceUse,
+} from './storage/index.js'
 
 export * from './contracts.js'
 export * from './runtime-settings.js'
@@ -46,6 +53,16 @@ export interface Config {
   recallLimit?: number
   /** Optional private owner settings document read before each recall. */
   settingsPath?: string
+  /** Maximum time to wait for the cross-process archive lease. */
+  leaseTimeoutMs?: number
+  /** Age after which an unrefreshed archive lease may be reclaimed. */
+  leaseStaleMs?: number
+  /** Maximum time dispose waits for already-started commits. */
+  disposeTimeoutMs?: number
+  /** Maximum accepted archive size before fail-closed quarantine. */
+  maxArchiveBytes?: number
+  /** Maximum accepted size of one transaction envelope. */
+  maxTransactionBytes?: number
 }
 
 /** Runtime schema for the memory plugin. */
@@ -53,6 +70,11 @@ export const Config: z<Config> = z.object({
   path: z.string().required(),
   recallLimit: z.number().step(1).min(1).max(20).default(DEFAULT_RECALL_LIMIT),
   settingsPath: z.string(),
+  leaseTimeoutMs: z.number().step(1).min(100).max(60_000).default(30_000),
+  leaseStaleMs: z.number().step(1).min(5_000).max(600_000).default(120_000),
+  disposeTimeoutMs: z.number().step(1).min(100).max(60_000).default(5_000),
+  maxArchiveBytes: z.number().step(1).min(1_048_576).max(1_073_741_824).default(67_108_864),
+  maxTransactionBytes: z.number().step(1).min(1_024).max(16_777_216).default(1_048_576),
 })
 
 declare module '@deepseek-ai/cordis' {
@@ -67,131 +89,11 @@ export interface OpenMemoryArchiveOptions {
   path: string
   createId?: () => string
   now?: () => Date
-}
-
-function object(value: unknown, path: string): Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error(`${path} must be an object`)
-  return value as Record<string, unknown>
-}
-
-function string(value: unknown, path: string): string {
-  if (typeof value !== 'string' || value.trim() === '') throw new Error(`${path} must be a non-empty string`)
-  return value
-}
-
-interface MemoryForgottenEvent {
-  schemaVersion: 1
-  event: 'forgotten'
-  id: string
-  createdAt: string
-  memoryId: string
-  sourceMessageId: string
-}
-
-interface MemoryCandidateResolutionEvent {
-  schemaVersion: 1
-  event: 'candidate-resolution'
-  id: string
-  createdAt: string
-  candidateId: string
-  decision: 'approved' | 'rejected'
-  sourceMessageId: string
-  memoryId?: string
-}
-
-type MemoryLogEntry = MemoryRecord | MemoryForgottenEvent | MemoryCandidate | MemoryCandidateResolutionEvent
-
-function parseRecord(value: Record<string, unknown>, line: number): MemoryRecord {
-  const record = value
-  if (record.schemaVersion !== 1) throw new Error(`memory line ${line}.schemaVersion must equal 1`)
-  if (record.status !== 'confirmed') throw new Error(`memory line ${line}.status must equal "confirmed"`)
-  if (record.visibility !== 'personal' && record.visibility !== 'confidential') {
-    throw new Error(`memory line ${line}.visibility is unsupported`)
-  }
-  return {
-    schemaVersion: 1,
-    id: string(record.id, `memory line ${line}.id`),
-    createdAt: string(record.createdAt, `memory line ${line}.createdAt`),
-    content: string(record.content, `memory line ${line}.content`),
-    visibility: record.visibility,
-    sourceMessageId: string(record.sourceMessageId, `memory line ${line}.sourceMessageId`),
-    ...(record.sourceCandidateId === undefined
-      ? {}
-      : { sourceCandidateId: string(record.sourceCandidateId, `memory line ${line}.sourceCandidateId`) }),
-    ...(record.supersedesMemoryId === undefined
-      ? {}
-      : { supersedesMemoryId: string(record.supersedesMemoryId, `memory line ${line}.supersedesMemoryId`) }),
-    status: 'confirmed',
-  }
-}
-
-function parseEntry(value: unknown, line: number): MemoryLogEntry {
-  const entry = object(value, `memory line ${line}`)
-  if (entry.event === 'forgotten') {
-    if (entry.schemaVersion !== 1) throw new Error(`memory line ${line}.schemaVersion must equal 1`)
-    return {
-      schemaVersion: 1,
-      event: 'forgotten',
-      id: string(entry.id, `memory line ${line}.id`),
-      createdAt: string(entry.createdAt, `memory line ${line}.createdAt`),
-      memoryId: string(entry.memoryId, `memory line ${line}.memoryId`),
-      sourceMessageId: string(entry.sourceMessageId, `memory line ${line}.sourceMessageId`),
-    }
-  }
-  if (entry.event === 'candidate') {
-    if (entry.schemaVersion !== 1) throw new Error(`memory line ${line}.schemaVersion must equal 1`)
-    if (entry.status !== 'pending') throw new Error(`memory line ${line}.status must equal "pending"`)
-    if (entry.visibility !== 'personal' && entry.visibility !== 'confidential') {
-      throw new Error(`memory line ${line}.visibility is unsupported`)
-    }
-    return {
-      schemaVersion: 1,
-      event: 'candidate',
-      id: string(entry.id, `memory line ${line}.id`),
-      createdAt: string(entry.createdAt, `memory line ${line}.createdAt`),
-      content: string(entry.content, `memory line ${line}.content`),
-      visibility: entry.visibility,
-      sourceMessageId: string(entry.sourceMessageId, `memory line ${line}.sourceMessageId`),
-      status: 'pending',
-    }
-  }
-  if (entry.event === 'candidate-resolution') {
-    if (entry.schemaVersion !== 1) throw new Error(`memory line ${line}.schemaVersion must equal 1`)
-    if (entry.decision !== 'approved' && entry.decision !== 'rejected') {
-      throw new Error(`memory line ${line}.decision is unsupported`)
-    }
-    return {
-      schemaVersion: 1,
-      event: 'candidate-resolution',
-      id: string(entry.id, `memory line ${line}.id`),
-      createdAt: string(entry.createdAt, `memory line ${line}.createdAt`),
-      candidateId: string(entry.candidateId, `memory line ${line}.candidateId`),
-      decision: entry.decision,
-      sourceMessageId: string(entry.sourceMessageId, `memory line ${line}.sourceMessageId`),
-      ...(entry.memoryId === undefined
-        ? {}
-        : { memoryId: string(entry.memoryId, `memory line ${line}.memoryId`) }),
-    }
-  }
-  return parseRecord(entry, line)
-}
-
-async function loadEntries(path: string): Promise<MemoryLogEntry[]> {
-  let source: string
-  try {
-    source = await readFile(path, 'utf8')
-  } catch (error) {
-    if (error instanceof Error && (error as NodeJS.ErrnoException).code === 'ENOENT') return []
-    throw error
-  }
-  return source.split(/\r?\n/u).flatMap((line, index) => {
-    if (line.trim() === '') return []
-    try {
-      return [parseEntry(JSON.parse(line) as unknown, index + 1)]
-    } catch (error) {
-      throw new Error(`failed to load ${path}: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  })
+  leaseTimeoutMs?: number
+  leaseStaleMs?: number
+  maxArchiveBytes?: number
+  maxTransactionBytes?: number
+  disposeTimeoutMs?: number
 }
 
 function explicitContent(text: string): string | undefined {
@@ -217,432 +119,256 @@ function lexicalScore(query: string, content: string): number {
   return overlap / queryUnits.size
 }
 
-class JsonlMemoryArchive implements CompanionMemoryArchive {
-  readonly #byMessage = new Map<string, MemoryRecord>()
-  readonly #byId = new Map<string, MemoryRecord>()
-  readonly #records: MemoryRecord[]
-  readonly #candidateByMessage = new Map<string, MemoryCandidate>()
-  readonly #candidateById = new Map<string, MemoryCandidate>()
-  readonly #candidateResolutionByMessage = new Map<string, MemoryCandidate>()
-  readonly #candidates: MemoryCandidate[]
-  #writes = Promise.resolve()
+function conflict(sourceMessageId: string): never {
+  throw new MemoryArchiveError(
+    `memory sourceMessageId ${JSON.stringify(sourceMessageId)} conflicts with an earlier command`,
+    'MEMORY_SOURCE_CONFLICT',
+  )
+}
+
+function existingMemory(state: FoldedMemoryState, use: SourceUse): MemoryRecord {
+  const memory = use.memoryId === undefined ? undefined : state.byId.get(use.memoryId)
+  if (memory === undefined) throw new Error('memory archive source result is unavailable')
+  return memory
+}
+
+class StorageBackedMemoryArchive implements CompanionMemoryArchive {
+  readonly #candidateReferences = new Map<string, Set<MemoryCandidate>>()
 
   constructor(
-    private readonly path: string,
-    entries: MemoryLogEntry[],
+    private readonly storage: MemoryArchiveStorage,
     private readonly createId: () => string,
     private readonly now: () => Date,
-  ) {
-    this.#records = []
-    this.#candidates = []
-    for (const entry of entries) {
-      if ('event' in entry && entry.event === 'forgotten') {
-        if (this.#sourceMessageUsed(entry.sourceMessageId)) {
-          throw new Error(`duplicate memory sourceMessageId ${JSON.stringify(entry.sourceMessageId)}`)
-        }
-        const target = this.#byId.get(entry.memoryId)
-        if (target === undefined) throw new Error(`forgotten event references unknown memory ${JSON.stringify(entry.memoryId)}`)
-        if (target.status !== 'confirmed') throw new Error(`memory ${JSON.stringify(entry.memoryId)} is already inactive`)
-        target.status = 'forgotten'
-        this.#byMessage.set(entry.sourceMessageId, target)
-        continue
-      }
-      if ('event' in entry && entry.event === 'candidate') {
-        if (this.#sourceMessageUsed(entry.sourceMessageId)) {
-          throw new Error(`duplicate memory sourceMessageId ${JSON.stringify(entry.sourceMessageId)}`)
-        }
-        if (this.#candidateById.has(entry.id) || this.#byId.has(entry.id)) {
-          throw new Error(`duplicate memory id ${JSON.stringify(entry.id)}`)
-        }
-        this.#candidates.push(entry)
-        this.#candidateById.set(entry.id, entry)
-        this.#candidateByMessage.set(entry.sourceMessageId, entry)
-        continue
-      }
-      if ('event' in entry && entry.event === 'candidate-resolution') {
-        const candidate = this.#candidateById.get(entry.candidateId)
-        if (candidate === undefined) {
-          throw new Error(`candidate resolution references unknown candidate ${JSON.stringify(entry.candidateId)}`)
-        }
-        if (candidate.status !== 'pending') {
-          throw new Error(`memory candidate ${JSON.stringify(entry.candidateId)} is already ${candidate.status}`)
-        }
-        if (entry.decision === 'approved') {
-          const memory = entry.memoryId === undefined ? undefined : this.#byId.get(entry.memoryId)
-          if (memory === undefined || memory.sourceCandidateId !== candidate.id) {
-            throw new Error(`candidate approval references invalid memory ${JSON.stringify(entry.memoryId)}`)
-          }
-          if (memory.sourceMessageId !== entry.sourceMessageId) {
-            throw new Error(`candidate approval source does not match memory ${JSON.stringify(entry.memoryId)}`)
-          }
-          candidate.status = 'approved'
-        } else {
-          if (this.#sourceMessageUsed(entry.sourceMessageId)) {
-            throw new Error(`duplicate memory sourceMessageId ${JSON.stringify(entry.sourceMessageId)}`)
-          }
-          candidate.status = 'rejected'
-          this.#candidateResolutionByMessage.set(entry.sourceMessageId, candidate)
-        }
-        continue
-      }
-      if (this.#sourceMessageUsed(entry.sourceMessageId)) {
-        throw new Error(`duplicate memory sourceMessageId ${JSON.stringify(entry.sourceMessageId)}`)
-      }
-      if (this.#byId.has(entry.id)) throw new Error(`duplicate memory id ${JSON.stringify(entry.id)}`)
-      if (entry.sourceCandidateId !== undefined) {
-        const candidate = this.#candidateById.get(entry.sourceCandidateId)
-        if (candidate === undefined) {
-          throw new Error(`memory references unknown candidate ${JSON.stringify(entry.sourceCandidateId)}`)
-        }
-        if (candidate.status !== 'pending') {
-          throw new Error(`memory candidate ${JSON.stringify(entry.sourceCandidateId)} is already ${candidate.status}`)
-        }
-      }
-      if (entry.supersedesMemoryId !== undefined) {
-        const target = this.#byId.get(entry.supersedesMemoryId)
-        if (target === undefined) {
-          throw new Error(`replacement references unknown memory ${JSON.stringify(entry.supersedesMemoryId)}`)
-        }
-        if (target.status !== 'confirmed') {
-          throw new Error(`replacement target ${JSON.stringify(entry.supersedesMemoryId)} is already inactive`)
-        }
-        target.status = 'superseded'
-      }
-      this.#records.push(entry)
-      this.#byId.set(entry.id, entry)
-      this.#byMessage.set(entry.sourceMessageId, entry)
-    }
+  ) {}
+
+  inspection(): ArchiveInspection {
+    return this.storage.inspection()
   }
 
-  #sourceMessageUsed(sourceMessageId: string): boolean {
-    return this.#byMessage.has(sourceMessageId)
-      || this.#candidateByMessage.has(sourceMessageId)
-      || this.#candidateResolutionByMessage.has(sourceMessageId)
+  dispose(): Promise<void> {
+    return this.storage.dispose()
   }
 
   async observeExplicit(input: ExplicitMemoryObservation): Promise<MemoryRecord | undefined> {
-    const existing = this.#byMessage.get(input.sourceMessageId)
-    if (existing !== undefined) return existing
     const content = explicitContent(input.text)
     if (content === undefined) return undefined
-    const record: MemoryRecord = {
-      schemaVersion: 1,
-      id: this.createId(),
-      createdAt: this.now().toISOString(),
-      content,
-      visibility: /保密|不要告诉|别告诉|不能告诉/u.test(input.text) ? 'confidential' : 'personal',
-      sourceMessageId: input.sourceMessageId,
-      status: 'confirmed',
-    }
-    if (this.#candidateById.has(record.id)) throw new Error(`duplicate memory id ${JSON.stringify(record.id)}`)
-    this.#records.push(record)
-    this.#byId.set(record.id, record)
-    this.#byMessage.set(record.sourceMessageId, record)
-    const write = this.#writes.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true })
-      await appendFile(this.path, `${JSON.stringify(record)}\n`, 'utf8')
+    const visibility: MemoryVisibility = /保密|不要告诉|别告诉|不能告诉/u.test(input.text) ? 'confidential' : 'personal'
+    return this.storage.transact(state => {
+      const used = state.sources.get(input.sourceMessageId)
+      if (used !== undefined) {
+        if (used.kind === 'memory' && used.content === content && used.visibility === visibility) {
+          return { events: [], result: existingMemory(state, used) }
+        }
+        return conflict(input.sourceMessageId)
+      }
+      const memory: MemoryRecord = {
+        schemaVersion: 1, id: this.createId(), createdAt: this.now().toISOString(), content, visibility,
+        sourceMessageId: input.sourceMessageId, status: 'confirmed',
+      }
+      return { events: [memory], result: memory }
     })
-    this.#writes = write.catch(() => {})
-    try {
-      await write
-    } catch (error) {
-      this.#records.pop()
-      this.#byId.delete(record.id)
-      this.#byMessage.delete(record.sourceMessageId)
-      throw error
-    }
-    return record
   }
 
   recall(input: MemoryRecall): MemoryRecord[] {
+    const state = this.storage.snapshot()
+    if (state === undefined) return []
     const limit = Math.max(0, input.limit ?? 8)
     const query = input.query.trim()
-    return this.#records
-      .filter(record => record.status === 'confirmed')
-      .map(record => ({ record, score: query === '' ? 1 : lexicalScore(query, record.content) }))
+    return state.records
+      .filter(memory => memory.status === 'confirmed')
+      .map(memory => ({ memory, score: query === '' ? 1 : lexicalScore(query, memory.content) }))
       .filter(item => query === '' || item.score > 0)
-      .sort((left, right) => right.score - left.score || right.record.createdAt.localeCompare(left.record.createdAt))
+      .sort((left, right) => right.score - left.score || right.memory.createdAt.localeCompare(left.memory.createdAt))
       .slice(0, limit)
-      .map(item => item.record)
+      .map(item => item.memory)
   }
 
   list(input: MemoryList = {}): MemoryRecord[] {
+    const state = this.storage.snapshot()
+    if (state === undefined) return []
     const limit = Math.max(0, input.limit ?? 100)
-    return this.#records
-      .filter(record => input.includeInactive === true || record.status === 'confirmed')
-      .map((record, index) => ({ record, index }))
-      .toSorted((left, right) => right.record.createdAt.localeCompare(left.record.createdAt) || right.index - left.index)
+    return state.records
+      .filter(memory => input.includeInactive === true || memory.status === 'confirmed')
+      .map((memory, index) => ({ memory, index }))
+      .toSorted((left, right) => right.memory.createdAt.localeCompare(left.memory.createdAt) || right.index - left.index)
       .slice(0, limit)
-      .map(item => item.record)
+      .map(item => item.memory)
   }
 
   async forget(input: MemoryForget): Promise<MemoryRecord> {
-    const duplicate = this.#byMessage.get(input.sourceMessageId)
-    if (duplicate !== undefined) return duplicate
-    const record = this.#byId.get(input.memoryId)
-    if (record === undefined) throw new Error(`memory ${JSON.stringify(input.memoryId)} does not exist`)
-    if (record.status !== 'confirmed') throw new Error(`memory ${JSON.stringify(input.memoryId)} is already ${record.status}`)
-    const event: MemoryForgottenEvent = {
-      schemaVersion: 1,
-      event: 'forgotten',
-      id: this.createId(),
-      createdAt: this.now().toISOString(),
-      memoryId: record.id,
-      sourceMessageId: input.sourceMessageId,
-    }
-    record.status = 'forgotten'
-    this.#byMessage.set(input.sourceMessageId, record)
-    const write = this.#writes.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true })
-      await appendFile(this.path, `${JSON.stringify(event)}\n`, 'utf8')
+    return this.storage.transact(state => {
+      const used = state.sources.get(input.sourceMessageId)
+      if (used !== undefined) {
+        if (used.kind === 'forget' && used.targetMemoryId === input.memoryId) return { events: [], result: existingMemory(state, used) }
+        return conflict(input.sourceMessageId)
+      }
+      const memory = state.byId.get(input.memoryId)
+      if (memory === undefined) throw new Error(`memory ${JSON.stringify(input.memoryId)} does not exist`)
+      if (memory.status !== 'confirmed') throw new Error(`memory ${JSON.stringify(input.memoryId)} is already ${memory.status}`)
+      const event: MemoryForgottenEvent = {
+        schemaVersion: 1, event: 'forgotten', id: this.createId(), createdAt: this.now().toISOString(),
+        memoryId: memory.id, sourceMessageId: input.sourceMessageId,
+      }
+      memory.status = 'forgotten'
+      return { events: [event], result: memory }
     })
-    this.#writes = write.catch(() => {})
-    try {
-      await write
-    } catch (error) {
-      record.status = 'confirmed'
-      this.#byMessage.delete(input.sourceMessageId)
-      throw error
-    }
-    return record
   }
 
   async replace(input: MemoryReplace): Promise<MemoryRecord> {
-    const duplicate = this.#byMessage.get(input.sourceMessageId)
-    if (duplicate !== undefined) return duplicate
-    const target = this.#byId.get(input.memoryId)
-    if (target === undefined) throw new Error(`memory ${JSON.stringify(input.memoryId)} does not exist`)
-    if (target.status !== 'confirmed') throw new Error(`memory ${JSON.stringify(input.memoryId)} is already ${target.status}`)
     const content = input.content.trim()
     if (content === '') throw new Error('replacement memory content must be a non-empty string')
-    const replacement: MemoryRecord = {
-      schemaVersion: 1,
-      id: this.createId(),
-      createdAt: this.now().toISOString(),
-      content,
-      visibility: target.visibility,
-      sourceMessageId: input.sourceMessageId,
-      supersedesMemoryId: target.id,
-      status: 'confirmed',
-    }
-    if (this.#byId.has(replacement.id) || this.#candidateById.has(replacement.id)) {
-      throw new Error(`duplicate memory id ${JSON.stringify(replacement.id)}`)
-    }
-    target.status = 'superseded'
-    this.#records.push(replacement)
-    this.#byId.set(replacement.id, replacement)
-    this.#byMessage.set(replacement.sourceMessageId, replacement)
-    const write = this.#writes.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true })
-      await appendFile(this.path, `${JSON.stringify(replacement)}\n`, 'utf8')
+    return this.storage.transact(state => {
+      const used = state.sources.get(input.sourceMessageId)
+      if (used !== undefined) {
+        if (used.kind === 'replace' && used.targetMemoryId === input.memoryId && used.content === content) {
+          return { events: [], result: existingMemory(state, used) }
+        }
+        return conflict(input.sourceMessageId)
+      }
+      const target = state.byId.get(input.memoryId)
+      if (target === undefined) throw new Error(`memory ${JSON.stringify(input.memoryId)} does not exist`)
+      if (target.status !== 'confirmed') throw new Error(`memory ${JSON.stringify(input.memoryId)} is already ${target.status}`)
+      const memory: MemoryRecord = {
+        schemaVersion: 1, id: this.createId(), createdAt: this.now().toISOString(), content,
+        visibility: target.visibility, sourceMessageId: input.sourceMessageId,
+        supersedesMemoryId: target.id, status: 'confirmed',
+      }
+      target.status = 'superseded'
+      return { events: [memory], result: memory }
     })
-    this.#writes = write.catch(() => {})
-    try {
-      await write
-    } catch (error) {
-      target.status = 'confirmed'
-      this.#records.pop()
-      this.#byId.delete(replacement.id)
-      this.#byMessage.delete(replacement.sourceMessageId)
-      throw error
-    }
-    return replacement
   }
 
   async importConfirmed(input: ConfirmedMemoryImport): Promise<ConfirmedMemoryImportResult> {
-    const duplicate = this.#byMessage.get(input.sourceMessageId)
-    if (duplicate !== undefined) return { memory: duplicate, imported: false }
     const content = input.content.trim()
     if (content === '') throw new Error('imported memory content must be a non-empty string')
     const createdAt = new Date(input.createdAt)
     if (Number.isNaN(createdAt.getTime())) throw new Error(`invalid imported memory timestamp ${JSON.stringify(input.createdAt)}`)
-    const record: MemoryRecord = {
-      schemaVersion: 1,
-      id: this.createId(),
-      createdAt: createdAt.toISOString(),
-      content,
-      visibility: input.visibility,
-      sourceMessageId: input.sourceMessageId,
-      status: 'confirmed',
-    }
-    if (this.#byId.has(record.id) || this.#candidateById.has(record.id)) {
-      throw new Error(`duplicate memory id ${JSON.stringify(record.id)}`)
-    }
-    this.#records.push(record)
-    this.#byId.set(record.id, record)
-    this.#byMessage.set(record.sourceMessageId, record)
-    const write = this.#writes.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true })
-      await appendFile(this.path, `${JSON.stringify(record)}\n`, 'utf8')
+    const timestamp = createdAt.toISOString()
+    return this.storage.transact<ConfirmedMemoryImportResult>(state => {
+      const used = state.sources.get(input.sourceMessageId)
+      if (used !== undefined) {
+        if (used.kind === 'memory' && used.content === content && used.visibility === input.visibility && used.createdAt === timestamp) {
+          return { events: [], result: { memory: existingMemory(state, used), imported: false } }
+        }
+        return conflict(input.sourceMessageId)
+      }
+      const memory: MemoryRecord = {
+        schemaVersion: 1, id: this.createId(), createdAt: timestamp, content, visibility: input.visibility,
+        sourceMessageId: input.sourceMessageId, status: 'confirmed',
+      }
+      return { events: [memory], result: { memory, imported: true } }
     })
-    this.#writes = write.catch(() => {})
-    try {
-      await write
-    } catch (error) {
-      this.#records.pop()
-      this.#byId.delete(record.id)
-      this.#byMessage.delete(record.sourceMessageId)
-      throw error
-    }
-    return { memory: record, imported: true }
   }
 
   async propose(input: MemoryCandidateProposal): Promise<MemoryCandidate> {
-    const duplicate = this.#candidateByMessage.get(input.sourceMessageId)
-    if (duplicate !== undefined) return duplicate
-    if (this.#byMessage.has(input.sourceMessageId) || this.#candidateResolutionByMessage.has(input.sourceMessageId)) {
-      throw new Error(`memory sourceMessageId ${JSON.stringify(input.sourceMessageId)} is already used`)
-    }
     const content = input.content.trim()
     if (content === '') throw new Error('candidate memory content must be a non-empty string')
-    const candidate: MemoryCandidate = {
-      schemaVersion: 1,
-      event: 'candidate',
-      id: this.createId(),
-      createdAt: this.now().toISOString(),
-      content,
-      visibility: input.visibility,
-      sourceMessageId: input.sourceMessageId,
-      status: 'pending',
-    }
-    if (this.#candidateById.has(candidate.id) || this.#byId.has(candidate.id)) {
-      throw new Error(`duplicate memory id ${JSON.stringify(candidate.id)}`)
-    }
-    this.#candidates.push(candidate)
-    this.#candidateById.set(candidate.id, candidate)
-    this.#candidateByMessage.set(candidate.sourceMessageId, candidate)
-    const write = this.#writes.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true })
-      await appendFile(this.path, `${JSON.stringify(candidate)}\n`, 'utf8')
+    const candidate = await this.storage.transact(state => {
+      const used = state.sources.get(input.sourceMessageId)
+      if (used !== undefined) {
+        if (used.kind === 'candidate' && used.content === content && used.visibility === input.visibility) {
+          const candidate = used.candidateId === undefined ? undefined : state.candidateById.get(used.candidateId)
+          if (candidate !== undefined) return { events: [], result: candidate }
+        }
+        return conflict(input.sourceMessageId)
+      }
+      const candidate: MemoryCandidate = {
+        schemaVersion: 1, event: 'candidate', id: this.createId(), createdAt: this.now().toISOString(),
+        content, visibility: input.visibility, sourceMessageId: input.sourceMessageId, status: 'pending',
+      }
+      return { events: [candidate], result: candidate }
     })
-    this.#writes = write.catch(() => {})
-    try {
-      await write
-    } catch (error) {
-      this.#candidates.pop()
-      this.#candidateById.delete(candidate.id)
-      this.#candidateByMessage.delete(candidate.sourceMessageId)
-      throw error
-    }
+    this.#rememberCandidateReference(candidate)
     return candidate
   }
 
   listCandidates(input: MemoryCandidateList = {}): MemoryCandidate[] {
+    const state = this.storage.snapshot()
+    if (state === undefined) return []
     const limit = Math.max(0, input.limit ?? 100)
-    return this.#candidates
+    const candidates = state.candidates
       .filter(candidate => input.includeResolved === true || candidate.status === 'pending')
       .map((candidate, index) => ({ candidate, index }))
       .toSorted((left, right) => right.candidate.createdAt.localeCompare(left.candidate.createdAt) || right.index - left.index)
       .slice(0, limit)
       .map(item => item.candidate)
+    for (const candidate of candidates) this.#rememberCandidateReference(candidate)
+    return candidates
   }
 
   async approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord> {
-    const duplicate = this.#byMessage.get(input.sourceMessageId)
-    if (duplicate !== undefined) return duplicate
-    if (this.#candidateByMessage.has(input.sourceMessageId) || this.#candidateResolutionByMessage.has(input.sourceMessageId)) {
-      throw new Error(`memory sourceMessageId ${JSON.stringify(input.sourceMessageId)} is already used`)
-    }
-    const candidate = this.#candidateById.get(input.candidateId)
-    if (candidate === undefined) throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} does not exist`)
-    if (candidate.status !== 'pending') {
-      throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} is already ${candidate.status}`)
-    }
-    const memory: MemoryRecord = {
-      schemaVersion: 1,
-      id: this.createId(),
-      createdAt: this.now().toISOString(),
-      content: candidate.content,
-      visibility: candidate.visibility,
-      sourceMessageId: input.sourceMessageId,
-      sourceCandidateId: candidate.id,
-      status: 'confirmed',
-    }
-    const resolution: MemoryCandidateResolutionEvent = {
-      schemaVersion: 1,
-      event: 'candidate-resolution',
-      id: this.createId(),
-      createdAt: this.now().toISOString(),
-      candidateId: candidate.id,
-      decision: 'approved',
-      sourceMessageId: input.sourceMessageId,
-      memoryId: memory.id,
-    }
-    if (this.#byId.has(memory.id) || this.#candidateById.has(memory.id)) {
-      throw new Error(`duplicate memory id ${JSON.stringify(memory.id)}`)
-    }
-    candidate.status = 'approved'
-    this.#records.push(memory)
-    this.#byId.set(memory.id, memory)
-    this.#byMessage.set(memory.sourceMessageId, memory)
-    const write = this.#writes.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true })
-      await appendFile(this.path, `${JSON.stringify(memory)}\n${JSON.stringify(resolution)}\n`, 'utf8')
+    const memory = await this.storage.transact(state => {
+      const used = state.sources.get(input.sourceMessageId)
+      if (used !== undefined) {
+        if (used.kind === 'approve' && used.candidateId === input.candidateId) return { events: [], result: existingMemory(state, used) }
+        return conflict(input.sourceMessageId)
+      }
+      const candidate = state.candidateById.get(input.candidateId)
+      if (candidate === undefined) throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} does not exist`)
+      if (candidate.status !== 'pending') throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} is already ${candidate.status}`)
+      const timestamp = this.now().toISOString()
+      const approved: MemoryRecord = {
+        schemaVersion: 1, id: this.createId(), createdAt: timestamp, content: candidate.content,
+        visibility: candidate.visibility, sourceMessageId: input.sourceMessageId,
+        sourceCandidateId: candidate.id, status: 'confirmed',
+      }
+      const resolution: MemoryCandidateResolutionEvent = {
+        schemaVersion: 1, event: 'candidate-resolution', id: this.createId(), createdAt: timestamp,
+        candidateId: candidate.id, decision: 'approved', sourceMessageId: input.sourceMessageId,
+        memoryId: approved.id,
+      }
+      candidate.status = 'approved'
+      return { events: [approved, resolution], result: approved }
     })
-    this.#writes = write.catch(() => {})
-    try {
-      await write
-    } catch (error) {
-      candidate.status = 'pending'
-      this.#records.pop()
-      this.#byId.delete(memory.id)
-      this.#byMessage.delete(memory.sourceMessageId)
-      throw error
-    }
+    for (const candidate of this.#candidateReferences.get(input.candidateId) ?? []) candidate.status = 'approved'
     return memory
   }
 
   async rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate> {
-    const duplicate = this.#candidateResolutionByMessage.get(input.sourceMessageId)
-    if (duplicate !== undefined) return duplicate
-    if (this.#byMessage.has(input.sourceMessageId) || this.#candidateByMessage.has(input.sourceMessageId)) {
-      throw new Error(`memory sourceMessageId ${JSON.stringify(input.sourceMessageId)} is already used`)
-    }
-    const candidate = this.#candidateById.get(input.candidateId)
-    if (candidate === undefined) throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} does not exist`)
-    if (candidate.status !== 'pending') {
-      throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} is already ${candidate.status}`)
-    }
-    const resolution: MemoryCandidateResolutionEvent = {
-      schemaVersion: 1,
-      event: 'candidate-resolution',
-      id: this.createId(),
-      createdAt: this.now().toISOString(),
-      candidateId: candidate.id,
-      decision: 'rejected',
-      sourceMessageId: input.sourceMessageId,
-    }
-    candidate.status = 'rejected'
-    this.#candidateResolutionByMessage.set(input.sourceMessageId, candidate)
-    const write = this.#writes.then(async () => {
-      await mkdir(dirname(this.path), { recursive: true })
-      await appendFile(this.path, `${JSON.stringify(resolution)}\n`, 'utf8')
+    const candidate = await this.storage.transact(state => {
+      const used = state.sources.get(input.sourceMessageId)
+      if (used !== undefined) {
+        if (used.kind === 'reject' && used.candidateId === input.candidateId) {
+          const existing = state.candidateById.get(input.candidateId)
+          if (existing !== undefined) return { events: [], result: existing }
+        }
+        return conflict(input.sourceMessageId)
+      }
+      const pending = state.candidateById.get(input.candidateId)
+      if (pending === undefined) throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} does not exist`)
+      if (pending.status !== 'pending') throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} is already ${pending.status}`)
+      const resolution: MemoryCandidateResolutionEvent = {
+        schemaVersion: 1, event: 'candidate-resolution', id: this.createId(), createdAt: this.now().toISOString(),
+        candidateId: pending.id, decision: 'rejected', sourceMessageId: input.sourceMessageId,
+      }
+      pending.status = 'rejected'
+      return { events: [resolution], result: pending }
     })
-    this.#writes = write.catch(() => {})
-    try {
-      await write
-    } catch (error) {
-      candidate.status = 'pending'
-      this.#candidateResolutionByMessage.delete(input.sourceMessageId)
-      throw error
-    }
+    for (const reference of this.#candidateReferences.get(input.candidateId) ?? []) reference.status = 'rejected'
+    this.#rememberCandidateReference(candidate)
     return candidate
+  }
+
+  #rememberCandidateReference(candidate: MemoryCandidate): void {
+    const references = this.#candidateReferences.get(candidate.id) ?? new Set<MemoryCandidate>()
+    references.add(candidate)
+    this.#candidateReferences.set(candidate.id, references)
   }
 }
 
-/**
- * Open a private append-only memory archive, validating every existing record.
- * @param options - File location and optional deterministic construction hooks.
- * @returns Archive ready for explicit observation and recall.
- */
+/** Open the owner-private v2 archive; legacy or damaged archives remain inspectable but fail closed. */
 export async function openMemoryArchive(options: OpenMemoryArchiveOptions): Promise<CompanionMemoryArchive> {
-  const records = await loadEntries(options.path)
-  return new JsonlMemoryArchive(
-    options.path,
-    records,
-    options.createId ?? randomUUID,
-    options.now ?? (() => new Date()),
-  )
+  const now = options.now ?? (() => new Date())
+  const storage = await MemoryArchiveStorage.open({
+    path: options.path,
+    now,
+    leaseTimeoutMs: options.leaseTimeoutMs,
+    leaseStaleMs: options.leaseStaleMs,
+    maxArchiveBytes: options.maxArchiveBytes,
+    maxTransactionBytes: options.maxTransactionBytes,
+    disposeTimeoutMs: options.disposeTimeoutMs,
+  })
+  return new StorageBackedMemoryArchive(storage, options.createId ?? randomUUID, now)
 }
 
 function userText(message: UserMessage): string {
@@ -944,8 +670,21 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   if (!Number.isSafeInteger(recallLimit) || recallLimit < 1 || recallLimit > 20) {
     throw new TypeError(`mistymoon-memory: recallLimit must be an integer from 1 through 20, got ${String(recallLimit)}`)
   }
-  const archive = await openMemoryArchive({ path: config.path })
+  const maxArchiveBytes = config.maxArchiveBytes ?? 67_108_864
+  const maxTransactionBytes = config.maxTransactionBytes ?? 1_048_576
+  if (maxTransactionBytes > maxArchiveBytes) {
+    throw new TypeError('mistymoon-memory: maxTransactionBytes must not exceed maxArchiveBytes')
+  }
+  const archive = await openMemoryArchive({
+    path: config.path,
+    leaseTimeoutMs: config.leaseTimeoutMs ?? 30_000,
+    leaseStaleMs: config.leaseStaleMs ?? 120_000,
+    disposeTimeoutMs: config.disposeTimeoutMs ?? 5_000,
+    maxArchiveBytes,
+    maxTransactionBytes,
+  })
   ctx.effect(() => ctx.provide('mistymoonMemory', archive), 'mistymoon-memory: shared archive')
+  ctx.effect(() => () => archive.dispose(), 'mistymoon-memory: bounded archive disposal')
   ctx.effect(
     () => ctx.tools.guard((execution) => memoryOwnerGuard(ctx, execution)),
     'mistymoon-memory: Owner Eligibility tool guard',
@@ -955,32 +694,39 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     const decision = await next()
     if (decision.kind === 'reject') return decision
     const ownerMessages = ownerEligibility(ctx).ownerMessages(agent, decision.messages)
-    for (const message of ownerMessages) {
-      const text = userText(message)
-      if (text !== '') await archive.observeExplicit({ sourceMessageId: message.id, text })
-    }
-    const query = ownerMessages.map(userText).filter(Boolean).join('\n')
-    if (query === '') return decision
-    const effectiveRecallLimit = config.settingsPath === undefined
-      ? recallLimit
-      : (await loadMemoryRuntimeSettings(config.settingsPath, recallLimit)).recallLimit
-    const memories = archive.recall({ query, limit: effectiveRecallLimit })
-    if (memories.length === 0) return decision
-    const text = recallSnapshot(memories)
-    return {
-      kind: 'enter',
-      messages: [
-        ...decision.messages,
-        createUserMessage({
-          content: [{ type: 'text', text }],
-          source: {
-            kind: 'plugin',
-            plugin: name,
-            form: 'snapshot',
-            sections: [{ name: 'memory:recall', text }],
-          },
-        }),
-      ],
+    try {
+      if (archive.inspection().state !== 'ready') return decision
+      for (const message of ownerMessages) {
+        const text = userText(message)
+        if (text !== '') await archive.observeExplicit({ sourceMessageId: message.id, text })
+      }
+      const query = ownerMessages.map(userText).filter(Boolean).join('\n')
+      if (query === '') return decision
+      const effectiveRecallLimit = config.settingsPath === undefined
+        ? recallLimit
+        : (await loadMemoryRuntimeSettings(config.settingsPath, recallLimit)).recallLimit
+      const memories = archive.recall({ query, limit: effectiveRecallLimit })
+      if (memories.length === 0) return decision
+      const text = recallSnapshot(memories)
+      return {
+        kind: 'enter',
+        messages: [
+          ...decision.messages,
+          createUserMessage({
+            content: [{ type: 'text', text }],
+            source: {
+              kind: 'plugin',
+              plugin: name,
+              form: 'snapshot',
+              sections: [{ name: 'memory:recall', text }],
+            },
+          }),
+        ],
+      }
+    } catch {
+      // Memory augmentation is optional for the current DSH turn. Governance
+      // commands still surface failures, while the Agent Loop continues without recall.
+      return decision
     }
   }, { prepend: true })
 }
