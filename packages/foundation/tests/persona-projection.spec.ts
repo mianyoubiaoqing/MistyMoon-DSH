@@ -2,9 +2,12 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import Commands from '@deepseek-ai/dsh-commands'
+import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import SystemPrompt, { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import { Context } from '@deepseek-ai/cordis'
+import * as IdentityPlugin from '@mistymoon/dsh-identity'
 import { describe, expect, it } from 'vitest'
 import * as FoundationPlugin from '../src/index.js'
 import {
@@ -255,15 +258,45 @@ describe('RP mode folding', () => {
   })
 })
 
+describe('RP mode command persistence', () => {
+  it('records a real /rp command through DSH Commands so the durable log owns the selection', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-rp-command-'))
+    const ctx = new Context()
+    await ctx.plugin(Commands)
+    await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, persona: 'Neutral preset persona.' })
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
+    await ctx.plugin(FoundationPlugin, { home: root, defaultRoleplayMode: 'companion' })
+
+    const session = Session.create(SessionId('rp-command'))
+    const agent = { id: SessionId('rp-command-agent'), session, ctx } as unknown as Agent
+    const controller = ctx.mistymoonRoleplay
+
+    expect(controller.get(agent)).toEqual({ mode: 'companion' })
+
+    const off = await ctx.commands.execute(agent, '/rp off', new AbortController().signal)
+    expect(off?.result).toMatchObject({ kind: 'success', text: 'MistyMoon RP is off.' })
+    expect(controller.get(agent)).toEqual({ mode: 'off' })
+
+    await ctx.commands.execute(agent, '/rp immersive', new AbortController().signal)
+    expect(controller.get(agent)).toEqual({ mode: 'immersive' })
+
+    const query = await ctx.commands.execute(agent, '/rp', new AbortController().signal)
+    expect(query?.result).toMatchObject({ kind: 'success', text: 'MistyMoon RP is immersive.' })
+    expect(controller.get(agent)).toEqual({ mode: 'immersive' })
+  })
+})
+
 describe('Foundation composition', () => {
   it('registers exactly one neutral prepare tool and no system-prompt persona provider', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-compose-'))
     const ctx = new Context()
     await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, persona: 'Neutral preset persona.' })
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
     const fiber = await ctx.plugin(FoundationPlugin, { home: root, defaultRoleplayMode: 'companion' })
 
-    expect(FoundationPlugin.inject).toEqual(['tools'])
+    expect(FoundationPlugin.inject).toEqual(['tools', 'mistymoonOwnerEligibility'])
     const assembly = await ctx.systemPrompt.assemble()
     expect(assembly.sections.map(section => section.name)).toEqual(['deployment:persona'])
     expect(assembly.contexts).toEqual([])
@@ -295,6 +328,7 @@ describe('Foundation composition', () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt, { includeHarnessIdentity: false, persona: 'Neutral preset persona.' })
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
     await ctx.plugin(FoundationPlugin, { home: firstHome, defaultRoleplayMode: 'companion' })
     await expect(ctx.plugin(FoundationPlugin, { home: secondHome, defaultRoleplayMode: 'companion' }))
       .rejects.toThrow(/has been registered|already registered/)

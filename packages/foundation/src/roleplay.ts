@@ -31,7 +31,9 @@ export function foldRoleplayMode(
   let mode = defaultMode
   for (const event of events) {
     if (event.type !== 'command/run' || event.data.name !== 'rp') continue
-    const requested = event.data.args?.trim()
+    const args = event.data.args
+    if (typeof args !== 'string') continue
+    const requested = args.trim()
     if (isRoleplayMode(requested)) mode = requested
   }
   return mode

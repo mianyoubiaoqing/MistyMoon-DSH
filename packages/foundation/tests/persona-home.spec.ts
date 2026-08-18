@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
+import * as IdentityPlugin from '@mistymoon/dsh-identity'
 import { describe, expect, it } from 'vitest'
 import * as Foundation from '../src/index.js'
 import { initializePersona } from '../src/index.js'
@@ -46,6 +47,7 @@ describe('initializePersona', () => {
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(ToolRuntime)
+    await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
 
     const fiber = await ctx.plugin(Foundation, { home: privateHome })
 

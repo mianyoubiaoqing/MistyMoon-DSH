@@ -1,0 +1,218 @@
+<mxfile host="app.diagrams.net" modified="2026-08-17T11:30:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="mistymoon-static" name="MistyMoon 静态架构">
+    <mxGraphModel dx="1800" dy="1320" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1320" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="&lt;b&gt;MistyMoon for DeepSeek Harness — 类静态架构图&lt;/b&gt;&lt;br&gt;&lt;font style=&quot;font-size:14px&quot;&gt;低耦合插件边界、稳定接口、数据所有权与规划能力（2026-08-17）&lt;/font&gt;" style="text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;fontSize=24;fontColor=#111827;" vertex="1" parent="1">
+          <mxGeometry x="50" y="25" width="1700" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="legend" value="&lt;b&gt;图例&lt;/b&gt;　实线＝当前运行依赖/调用　　虚线＝规划或 provision 边界　　紫色＝MistyMoon　　蓝色＝DSH 公共扩展点　　灰色＝外部/私有数据" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9FAFB;strokeColor=#9CA3AF;fontColor=#374151;fontSize=13;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="180" y="100" width="1440" height="42" as="geometry" />
+        </mxCell>
+
+        <mxCell id="dshBoundary" value="&lt;b&gt;② DeepSeek Harness（Runtime / Host）&lt;/b&gt; — MistyMoon 不修改其源码、客户端或 Profile" style="swimlane;html=1;rounded=1;startSize=36;horizontal=1;fillColor=#EFF6FF;strokeColor=#2563EB;strokeWidth=2;fontColor=#1E3A8A;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="310" y="170" width="1120" height="245" as="geometry" />
+        </mxCell>
+        <mxCell id="dshAgent" value="&lt;b&gt;Agent / Session&lt;/b&gt;&lt;br&gt;durable events&lt;br&gt;surface replacement&lt;br&gt;request/header" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="345" y="235" width="190" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="dshPolicy" value="&lt;b&gt;Tools / Permission / Sandbox&lt;/b&gt;&lt;br&gt;tools.restrict()&lt;br&gt;delegated policy&lt;br&gt;approval = never" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="565" y="235" width="220" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="dshPreset" value="&lt;b&gt;Cordis / Agent Presets&lt;/b&gt;&lt;br&gt;ctx.effect / ctx.on&lt;br&gt;agents.create()&lt;br&gt;agentPresets.mount()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="815" y="235" width="220" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="dshLlm" value="&lt;b&gt;Official DeepSeek Adapter&lt;/b&gt;&lt;br&gt;provider / model&lt;br&gt;reasoningEffort&lt;br&gt;stream + usage" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1065" y="235" width="220" height="125" as="geometry" />
+        </mxCell>
+        <mxCell id="dshWeb" value="&lt;b&gt;Web Host / ApiProxy&lt;/b&gt;&lt;br&gt;loopback RPC evidence&lt;br&gt;Settings slots" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#3B82F6;fontColor=#1E3A8A;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1310" y="235" width="95" height="125" as="geometry" />
+        </mxCell>
+
+        <mxCell id="owner" value="&lt;b&gt;① Owner / Channels&lt;/b&gt;&lt;br&gt;Web（当前）&lt;br&gt;QQ / Mobile（规划）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#6B7280;strokeWidth=2;fontColor=#111827;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="55" y="235" width="200" height="120" as="geometry" />
+        </mxCell>
+        <mxCell id="privateHome" value="&lt;b&gt;④ Owner-private DSH Home&lt;/b&gt;&lt;br&gt;&lt;br&gt;persona/persona.json&lt;br&gt;persona/draft.json + versions/&lt;br&gt;memory/memories.jsonl&lt;br&gt;settings/settings.json&lt;br&gt;&lt;br&gt;&lt;i&gt;真实人格、记忆、凭据不入仓库&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#6B7280;strokeWidth=2;fontColor=#111827;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1480" y="185" width="260" height="210" as="geometry" />
+        </mxCell>
+
+        <mxCell id="mmBoundary" value="&lt;b&gt;③ MistyMoon 插件套件&lt;/b&gt; — 模块间只交换稳定、明确的数据结构" style="swimlane;html=1;rounded=1;startSize=38;horizontal=1;fillColor=#FAF5FF;strokeColor=#7C3AED;strokeWidth=2;fontColor=#581C87;fontSize=17;" vertex="1" parent="1">
+          <mxGeometry x="55" y="485" width="1685" height="665" as="geometry" />
+        </mxCell>
+
+        <mxCell id="identity" value="&lt;b&gt;&amp;lt;&amp;lt;plugin&amp;gt;&amp;gt; identity&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#0F766E&quot;&gt;OwnerEligibilityPolicy&lt;br&gt;DshOwnerEligibilityService&lt;/font&gt;&lt;br&gt;────────────&lt;br&gt;+ ownerMessages()&lt;br&gt;+ evaluateCurrentTurn()&lt;br&gt;&lt;br&gt;&lt;i&gt;user source + depth 0 + authority evidence；fail closed&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ECFDF5;strokeColor=#0F766E;strokeWidth=2;fontColor=#134E4A;fontSize=13;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="90" y="555" width="300" height="235" as="geometry" />
+        </mxCell>
+        <mxCell id="foundation" value="&lt;b&gt;&amp;lt;&amp;lt;plugin&amp;gt;&amp;gt; foundation&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#BE185D&quot;&gt;PersonaWorkspace&lt;br&gt;RoleplayController&lt;br&gt;PersonaTurnDeliveryCoordinator&lt;/font&gt;&lt;br&gt;────────────&lt;br&gt;+ draft / publish / rollback&lt;br&gt;+ turn-voice projection&lt;br&gt;+ prepareFinalReply()&lt;br&gt;&lt;br&gt;&lt;i&gt;拥有 Persona；不读 Memory&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFF1F2;strokeColor=#BE185D;strokeWidth=2;fontColor=#881337;fontSize=13;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="420" y="555" width="315" height="235" as="geometry" />
+        </mxCell>
+        <mxCell id="memory" value="&lt;b&gt;&amp;lt;&amp;lt;plugin&amp;gt;&amp;gt; memory&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#B45309&quot;&gt;CompanionMemoryArchive&lt;br&gt;MemoryRecord / Candidate&lt;/font&gt;&lt;br&gt;────────────&lt;br&gt;+ observeExplicit()&lt;br&gt;+ recall() / list()&lt;br&gt;+ propose / approve / reject&lt;br&gt;+ replace / forget&lt;br&gt;&lt;br&gt;&lt;i&gt;拥有治理档案；不解释 Persona&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#B45309;strokeWidth=2;fontColor=#78350F;fontSize=13;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="765" y="555" width="315" height="235" as="geometry" />
+        </mxCell>
+        <mxCell id="settings" value="&lt;b&gt;&amp;lt;&amp;lt;plugin&amp;gt;&amp;gt; settings-ui&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#7C3AED&quot;&gt;Loopback Host API&lt;br&gt;MistyMoonSettingsTab&lt;/font&gt;&lt;br&gt;────────────&lt;br&gt;+ persona draft operations&lt;br&gt;+ Character Card preview&lt;br&gt;+ candidate review&lt;br&gt;&lt;br&gt;&lt;i&gt;只调用服务；不复制业务规则&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F3FF;strokeColor=#7C3AED;strokeWidth=2;fontColor=#4C1D95;fontSize=13;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="1110" y="555" width="315" height="235" as="geometry" />
+        </mxCell>
+        <mxCell id="installer" value="&lt;b&gt;&amp;lt;&amp;lt;tooling&amp;gt;&amp;gt; installer&lt;/b&gt;&lt;br&gt;preview / install helper&lt;br&gt;────────────&lt;br&gt;&lt;i&gt;不拥有 DSH Profile 格式&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9FAFB;strokeColor=#6B7280;fontColor=#374151;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1455" y="575" width="245" height="155" as="geometry" />
+        </mxCell>
+
+        <mxCell id="workContracts" value="&lt;b&gt;⑤ &amp;lt;&amp;lt;pure contracts&amp;gt;&amp;gt; work-agent&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#4338CA&quot;&gt;SharedBaselineRegistry&lt;br&gt;WorkPresetResolver&lt;br&gt;CompatibilityGate&lt;br&gt;WorkActivationPublicationV1&lt;/font&gt;&lt;br&gt;────────────&lt;br&gt;零 DSH / Foundation / Memory 依赖&lt;br&gt;只输出不可变 path-free publication snapshot" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#4338CA;strokeWidth=2;fontColor=#312E81;fontSize=13;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="155" y="855" width="385" height="225" as="geometry" />
+        </mxCell>
+        <mxCell id="workAdapter" value="&lt;b&gt;⑤ &amp;lt;&amp;lt;DSH adapter&amp;gt;&amp;gt; work-agent-dsh&lt;/b&gt;&lt;br&gt;&lt;font color=&quot;#4338CA&quot;&gt;createFreshWorkActivation()&lt;br&gt;createFixedWorkPresetProvider()&lt;br&gt;createGovernedWorkPresetProvider()&lt;/font&gt;&lt;br&gt;────────────&lt;br&gt;fresh depth-one child / empty seed&lt;br&gt;publication commit 重校验 / rollback&lt;br&gt;&lt;br&gt;&lt;i&gt;Phase 0 inert：当前不由 bundle 注册&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EEF2FF;strokeColor=#4338CA;strokeWidth=2;fontColor=#312E81;fontSize=13;verticalAlign=top;spacingTop=10;" vertex="1" parent="1">
+          <mxGeometry x="585" y="855" width="420" height="225" as="geometry" />
+        </mxCell>
+        <mxCell id="upstreams" value="&lt;b&gt;⑥ 固定上游编码层（规划 provision）&lt;/b&gt;&lt;br&gt;Anchored Standard @ 25f21ae&lt;br&gt;Routing Suite（external，待 checksum）&lt;br&gt;J-Space（实验门）&lt;br&gt;&lt;br&gt;&lt;i&gt;许可证与版本 manifest 先于启用&lt;/i&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#6B7280;dashed=1;strokeWidth=2;fontColor=#374151;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1045" y="855" width="315" height="225" as="geometry" />
+        </mxCell>
+        <mxCell id="experience" value="&lt;b&gt;⑥ 体验层（规划，未实现）&lt;/b&gt;&lt;br&gt;companion-chat&lt;br&gt;character-scene&lt;br&gt;tabletop-campaign&lt;br&gt;────────────&lt;br&gt;Scene Role / Campaign Canon&lt;br&gt;与 RP 等级、DSH 模式正交" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FDF2F8;strokeColor=#DB2777;dashed=1;strokeWidth=2;fontColor=#831843;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="1400" y="855" width="285" height="225" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edgeOwnerWeb" value="认证" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeWidth=2;strokeColor=#4B5563;fontSize=11;exitX=1;exitY=0.15;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="owner" target="dshWeb">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="280" y="215" />
+              <mxPoint x="1358" y="215" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeBundleDsh" value="Cordis lifecycle / public seams" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeWidth=2;strokeColor=#7C3AED;fontSize=11;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="mmBoundary" target="dshBoundary">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="edgeIdentityFoundation" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;strokeWidth=2;strokeColor=#0F766E;exitX=0.65;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="identity" target="foundation">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="285" y="535" />
+              <mxPoint x="499" y="535" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeIdentityMemory" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;strokeWidth=2;strokeColor=#0F766E;fontSize=10;exitX=0.85;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="identity" target="memory">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="345" y="525" />
+              <mxPoint x="844" y="525" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeSettingsFoundation" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;strokeColor=#7C3AED;fontSize=10;exitX=0.18;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="settings" target="foundation">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1167" y="810" />
+              <mxPoint x="656" y="810" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeSettingsMemory" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;strokeColor=#7C3AED;fontSize=10;exitX=0.6;exitY=1;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="settings" target="memory">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1299" y="835" />
+              <mxPoint x="1001" y="835" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeFoundationStore" value="persona files" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#BE185D;fontSize=10;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="foundation" target="privateHome">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="656" y="455" />
+              <mxPoint x="1545" y="455" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeMemoryStore" value="memory archive" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#B45309;fontSize=10;exitX=0.75;exitY=0;exitDx=0;exitDy=0;entryX=0.65;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="memory" target="privateHome">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1001" y="470" />
+              <mxPoint x="1649" y="470" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeFoundationAgent" value="voice / final gate" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#BE185D;fontSize=10;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="foundation" target="dshAgent">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="499" y="440" />
+              <mxPoint x="393" y="440" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeMemoryAgent" value="recall snapshot" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeColor=#B45309;fontSize=10;exitX=0.1;exitY=0;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="memory" target="dshAgent">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="797" y="425" />
+              <mxPoint x="488" y="425" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeContractsAdapter" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeWidth=2;strokeColor=#4338CA;fontSize=10;exitX=0.85;exitY=0;exitDx=0;exitDy=0;entryX=0.15;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="workContracts" target="workAdapter">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="482" y="800" />
+              <mxPoint x="648" y="800" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeAdapterPreset" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeWidth=2;strokeColor=#4338CA;fontSize=10;exitX=0.4;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="workAdapter" target="dshPreset">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="750" y="805" />
+              <mxPoint x="750" y="405" />
+              <mxPoint x="925" y="405" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeAdapterLlm" value="Flash / Pro" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=block;strokeWidth=2;strokeColor=#4338CA;fontSize=10;exitX=0.95;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="workAdapter" target="dshLlm">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1095" y="840" />
+              <mxPoint x="1095" y="390" />
+              <mxPoint x="1175" y="390" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeUpstreamContracts" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;dashed=1;strokeWidth=2;strokeColor=#6B7280;fontSize=10;exitX=0.15;exitY=0;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="upstreams" target="workContracts">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1092" y="820" />
+              <mxPoint x="348" y="820" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeUpstreamAdapter" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;dashed=1;strokeWidth=2;strokeColor=#6B7280;fontSize=10;exitX=0.35;exitY=0;exitDx=0;exitDy=0;entryX=0.8;entryY=0;entryDx=0;entryDy=0;" edge="1" parent="1" source="upstreams" target="workAdapter">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1155" y="840" />
+              <mxPoint x="921" y="840" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeExperienceFoundation" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;dashed=1;strokeColor=#DB2777;exitX=0.25;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="experience" target="foundation">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1471" y="795" />
+              <mxPoint x="499" y="795" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="edgeExperienceMemory" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=open;dashed=1;strokeColor=#DB2777;fontSize=10;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.75;entryY=1;entryDx=0;entryDy=0;" edge="1" parent="1" source="experience" target="memory">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1543" y="830" />
+              <mxPoint x="1001" y="830" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+        <mxCell id="invariant" value="&lt;b&gt;核心不变量&lt;/b&gt;　DSH 安全/权限/预设始终优先；人格与记忆可从 DSH 模型可见日志重建；child 不继承 RP transcript；Foundation 与 Memory 不互相越权；高风险动作必须由 Owner 确认。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF2F2;strokeColor=#DC2626;fontColor=#7F1D1D;fontSize=13;align=center;verticalAlign=middle;" vertex="1" parent="1">
+          <mxGeometry x="180" y="1095" width="1440" height="38" as="geometry" />
+        </mxCell>
+
+        <mxCell id="readingGuideStatic" value="&lt;b&gt;如何读这张图（编号对应上方区域）&lt;/b&gt;&lt;br&gt;① 用户消息只先进入 DSH，不能直接读取 Persona 或 Memory。　② DSH 拥有 Agent、工具、权限、模型和 Web Host，始终优先于 RP 规则。&lt;br&gt;③ 当前 MistyMoon 插件：Identity 判定 Owner；Foundation 管 Persona/voice；Memory 管长期事实；Settings UI 只调用服务。&lt;br&gt;④ 真实人格与记忆仅存私有目录；指向它的箭头表示文件所有权，不表示上传。&lt;br&gt;⑤ Work Agent 合同与 DSH child seam 已验证，但产品 provider / 真实编码 preset 尚未注册。　⑥ 虚线框是规划能力，当前不可用。&lt;br&gt;&lt;b&gt;箭头：&lt;/b&gt;实线＝当前调用/依赖；虚线＝规划/provision；箭头指向被调用、被拥有或被适配的一方。" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFBEB;strokeColor=#D97706;strokeWidth=2;fontColor=#78350F;fontSize=12;align=left;verticalAlign=middle;spacingLeft=14;spacingRight=14;" vertex="1" parent="1">
+          <mxGeometry x="55" y="1165" width="1685" height="120" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

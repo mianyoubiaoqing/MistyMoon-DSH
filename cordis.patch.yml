@@ -1,4 +1,9 @@
 - insert:
+    - id: mistymoon-identity
+      name: '@mistymoon/dsh/identity'
+      config:
+        ownerId: local-owner
+
     - id: mistymoon-foundation
       name: '@mistymoon/dsh/foundation'
       config:
@@ -16,3 +21,8 @@
         path: !!js dshHomePath('mistymoon', 'memory', 'memories.jsonl')
         recallLimit: 8
         settingsPath: !!js dshHomePath('mistymoon', 'settings', 'settings.json')
+
+    - id: mistymoon-work-agent-runtime
+      name: '@mistymoon/dsh/work-agent-dsh'
+      config:
+        settingsPath: !!js dshHomePath('mistymoon', 'settings', 'work-model.json')

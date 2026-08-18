@@ -2,12 +2,16 @@
 
 import { useEffect, useState, type ReactNode } from 'react'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { MemoryCandidate } from '@mistymoon/dsh-memory'
 import {
   DEFAULT_CHARACTER_CARD_MAPPING,
-  type CharacterCardPersonaMapping,
 } from '@mistymoon/dsh-foundation/character-card'
-import type { MistyMoonCharacterCardPreview, MistyMoonSettingsSnapshot } from '../index.js'
+import type {
+  CharacterCardPersonaMapping,
+  MemoryCandidate,
+  MistyMoonCharacterCardPreview,
+  MistyMoonSettingsSnapshot,
+  MistyMoonWorkModelSnapshot,
+} from '../contracts.js'
 
 /** Registration-side operations used by the settings page. */
 export interface MistyMoonSettingsTabInjected {
@@ -27,6 +31,13 @@ export interface MistyMoonSettingsTabInjected {
     mapping: CharacterCardPersonaMapping,
   ) => Promise<MistyMoonSettingsSnapshot>
   listCandidates: () => Promise<MemoryCandidate[]>
+  readWorkModel: () => Promise<MistyMoonWorkModelSnapshot>
+  saveWorkModel: (input: {
+    expectedRevision: number
+    provider: string
+    model: string
+    ownerConfirmed: boolean
+  }) => Promise<MistyMoonWorkModelSnapshot>
   approveCandidate: (candidateId: string) => Promise<void>
   rejectCandidate: (candidateId: string) => Promise<void>
 }
@@ -80,6 +91,8 @@ export function MistyMoonSettingsTab({
   previewCharacterCard,
   applyCharacterCard,
   listCandidates,
+  readWorkModel,
+  saveWorkModel,
   approveCandidate,
   rejectCandidate,
   t,
@@ -89,6 +102,9 @@ export function MistyMoonSettingsTab({
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [draft, setDraft] = useState<MistyMoonSettingsSnapshot | undefined>()
   const [candidates, setCandidates] = useState<MemoryCandidate[]>([])
+  const [workModel, setWorkModel] = useState<MistyMoonWorkModelSnapshot>()
+  const [workModelChoice, setWorkModelChoice] = useState('')
+  const [workModelState, setWorkModelState] = useState<SaveState>('idle')
   const [candidateDecision, setCandidateDecision] = useState<CandidateDecisionState | undefined>()
   const [candidateError, setCandidateError] = useState(false)
   const [cardState, setCardState] = useState<CardState>('idle')
@@ -99,11 +115,14 @@ export function MistyMoonSettingsTab({
   useEffect(() => {
     let current = true
     setLoadState('loading')
-    void Promise.all([read(), listCandidates()]).then(
-      ([settings, nextCandidates]) => {
+    void Promise.all([read(), listCandidates(), readWorkModel()]).then(
+      ([settings, nextCandidates, nextWorkModel]) => {
         if (!current) return
         setDraft(settings)
         setCandidates(nextCandidates)
+        setWorkModel(nextWorkModel)
+        setWorkModelChoice(`${nextWorkModel.selection.provider}\u0000${nextWorkModel.selection.model}`)
+        setWorkModelState('idle')
         setLoadState('ready')
         setSaveState('idle')
         setCandidateError(false)
@@ -111,7 +130,7 @@ export function MistyMoonSettingsTab({
       () => { if (current) setLoadState('error') },
     )
     return () => { current = false }
-  }, [listCandidates, read, request])
+  }, [listCandidates, read, readWorkModel, request])
 
   if (loadState === 'loading') return <p className="mistymoon-status">{t('loading')}</p>
   if (loadState === 'error' || draft === undefined) {
@@ -226,12 +245,71 @@ export function MistyMoonSettingsTab({
     )
   }
 
+  const selectedWorkModel = workModel?.options.find(option =>
+    `${option.provider}\u0000${option.model}` === workModelChoice)
+  const applyWorkModel = (): void => {
+    if (workModel === undefined || selectedWorkModel === undefined || workModelState === 'saving') return
+    setWorkModelState('saving')
+    void saveWorkModel({
+      expectedRevision: workModel.selection.revision,
+      provider: selectedWorkModel.provider,
+      model: selectedWorkModel.model,
+      ownerConfirmed: selectedWorkModel.qualification !== 'qualified-direct',
+    }).then(
+      (next) => {
+        setWorkModel(next)
+        setWorkModelChoice(`${next.selection.provider}\u0000${next.selection.model}`)
+        setWorkModelState('saved')
+      },
+      () => { setWorkModelState('error') },
+    )
+  }
+
   return (
     <section className="mistymoon-settings" aria-labelledby="mistymoon-settings-title">
       <header>
         <h3 id="mistymoon-settings-title">{t('title')}</h3>
         <p>{t('intro')}</p>
       </header>
+
+      <fieldset>
+        <legend>{t('workModel')}</legend>
+        <p className="mistymoon-status">{t('workModelHint')}</p>
+        {workModel === undefined || workModel.options.length === 0 ? (
+          <p className="mistymoon-validation">{t('workModelEmpty')}</p>
+        ) : (
+          <label>
+            <span>{t('workModelSelect')}</span>
+            <select
+              value={workModelChoice}
+              onChange={(event) => {
+                setWorkModelChoice(event.currentTarget.value)
+                setWorkModelState('idle')
+              }}
+            >
+              {workModel.options.map(option => (
+                <option key={`${option.provider}\u0000${option.model}`} value={`${option.provider}\u0000${option.model}`}>
+                  {option.providerName} — {option.modelName}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {selectedWorkModel?.qualification === 'experimental-owner-configured'
+          ? <p className="mistymoon-validation">{t('workModelExperimental')}</p>
+          : <p className="mistymoon-status">{t('workModelQualified')}</p>}
+        <div className="mistymoon-actions">
+          <button
+            type="button"
+            disabled={selectedWorkModel === undefined || workModelState === 'saving'}
+            onClick={applyWorkModel}
+          >
+            {workModelState === 'saving' ? t('saving') : t('workModelApply')}
+          </button>
+        </div>
+        {workModelState === 'saved' ? <p className="mistymoon-success">{t('workModelSaved')}</p> : null}
+        {workModelState === 'error' ? <p className="mistymoon-validation">{t('workModelError')}</p> : null}
+      </fieldset>
 
       <fieldset className="mistymoon-import">
         <legend>{t('cardImport')}</legend>

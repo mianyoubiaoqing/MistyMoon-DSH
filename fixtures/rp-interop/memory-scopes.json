@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "queries": [
+    {
+      "scope": { "kind": "companion-reality", "ownerId": "owner-fixture" },
+      "allowedSourceIds": ["reality-observation-1"],
+      "forbiddenSourceIds": ["scene-observation-1", "campaign-a-observation-1"]
+    },
+    {
+      "scope": { "kind": "character-scene", "sceneId": "scene-neutral-1", "branchId": "scene-main" },
+      "allowedSourceIds": ["scene-observation-1"],
+      "forbiddenSourceIds": ["reality-observation-1", "campaign-a-observation-1"]
+    },
+    {
+      "scope": { "kind": "tabletop-campaign", "campaignId": "campaign-neutral-1", "branchId": "branch-a" },
+      "allowedSourceIds": ["campaign-a-observation-1"],
+      "forbiddenSourceIds": ["reality-observation-1", "scene-observation-1", "campaign-b-observation-1"]
+    }
+  ]
+}

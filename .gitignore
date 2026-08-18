@@ -23,6 +23,13 @@ exports/
 *.sqlite3
 *.jsonl
 
+# Local-only research, handoff, and source-reference artifacts.
+.research/
+CONTEXT.md
+HANDOFF.md
+**/HANDOFF*.md
+docs/QQ图片*.png
+
 **/personas/*/
 !**/personas/template/
 !**/personas/template/**

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "id": "relationship-neutral-v1",
+  "ownerPersonaId": "owner-persona-neutral-v1",
+  "characterId": "archive-curator-v1",
+  "register": "polite-collaborative",
+  "sourceIds": ["fixture-observation-1"],
+  "mustNotBeOverwrittenByCharacterImport": true
+}

@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "summaryId": "neutral-summary-1",
+  "revisions": [
+    {
+      "revision": 1,
+      "status": "paused",
+      "text": "The fictional visitor asked about the ferry.",
+      "sourceRevisions": [{ "sourceId": "fixture-message-1", "revision": 1 }],
+      "generator": "fixture-generator-v1"
+    },
+    {
+      "revision": 2,
+      "status": "invalidated",
+      "text": "The fictional visitor asked about a ferry and an unverified author.",
+      "sourceRevisions": [
+        { "sourceId": "fixture-message-1", "revision": 1 },
+        { "sourceId": "fixture-message-2", "revision": 1, "laterSupersededBy": 2 }
+      ],
+      "generator": "fixture-generator-v1"
+    },
+    {
+      "revision": 3,
+      "status": "active",
+      "rollbackOf": 2,
+      "text": "The fictional visitor asked about the ferry; no author is established.",
+      "sourceRevisions": [
+        { "sourceId": "fixture-message-1", "revision": 1 },
+        { "sourceId": "fixture-message-2", "revision": 2 }
+      ],
+      "generator": "fixture-generator-v1"
+    }
+  ]
+}

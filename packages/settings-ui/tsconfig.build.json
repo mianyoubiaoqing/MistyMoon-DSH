@@ -8,6 +8,6 @@
     "outDir": "lib/types",
     "rootDir": "src"
   },
-  "include": ["src/**/*.ts", "src/**/*.tsx"],
+  "include": ["src/index.ts", "src/contracts.ts"],
   "exclude": ["tests"]
 }

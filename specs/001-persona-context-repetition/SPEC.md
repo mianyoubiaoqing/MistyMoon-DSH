@@ -1,5 +1,11 @@
 # 001：互斥双阶段输出画像，兼顾短对话与长程最终回复
 
+## 2026-08-18 适用范围修订
+
+本规范继续完整约束**除 `mistymoon-rp-host-v1` 外的通用 Agent preset**。RP 专用 preset 改用完整已发布 Persona 的受保护 `deployment:persona` system projection，并由 DSH `request/header` 记录实际模型所见 system 文本；它不生成 turn-voice/final-voice-refresh，也不暴露 `mistymoon_prepare_final_reply`。该例外按精确 preset identity 和顶层 Owner Eligibility 判定，不能由 prompt、自称或普通配置字符串启用。
+
+这不是全局替换：Coding、Standard、Minimal 及其他既有 preset 继续使用本文的互斥双阶段 delivery 与 final-reply 工具。Foundation 必须在同一 public seam 上测试两条策略，保证 RP Host 的新行为不会让通用 preset 回退。
+
 状态：已由用户于 `2026-08-16` 验收通过并授权提交 PR。旧版“每请求固定 anchor”“仅靠模型主动 prepare、跳过则无人格”，以及双层实现中“初始画像与最终 refresh 同时生效”的语义均因实际验收暴露产品缺口而撤回。
 
 诊断基线：MistyMoon 产品代码基线 `f21afb2256865af2344a3b9422be9e296788dd95`；当前未提交工作区包含上一轮实施 Agent 的方案，全部视为用户所有；DSH 官方 `master` 核对基线为 `47f943859bef60e4160492346772ded9b24f765a`；修订日期 `2026-08-16`。实施开始前必须重新只读核对 DSH 官方远端最新版本。
@@ -123,7 +129,7 @@ Memory、Importer、Settings 和 Bundle 不拥有该状态机，不增加跨包�
 - 长任务保留已验证有效的 prepare refresh，对抗上下文稀释。
 - 每个 owner turn 最多一条初始 capsule、最多一条合法 final refresh；没有每 step 新投影。
 - 任一 provider request 最多一条 active voice profile；prepare 是 `turn-voice active -> turn-voice consumed -> final-voice-refresh active` 的原子状态转移。
-- MistyMoon 人格永不进入 DSH system prompt；Coding、Plan、工具、权限、审批和安全规则保持优先。
+- 完整 MistyMoon Persona 只进入受认证 RP Host preset 的 `deployment:persona` system slot；其他 preset 仍不接收完整 Persona system section。Coding、Plan、工具、权限、审批和安全规则在两条策略中都保持优先。
 - 所有模型可见 capsule、prepare call/result、restriction 生命周期和过期结果可由 DSH 日志重建。
 - Foundation 通过一个小 Interface 隐藏投影、去重、恢复、cleanup 和失败规则。
 
@@ -252,7 +258,7 @@ next owner turn
 
 ## 兼容性要求
 
-- 只使用 DSH 官方远端最新版本的公开 seam；不得修改 `D:\ai\deepseek-harness`。
+- 只使用 DSH 官方远端最新版本的公开 seam；不得修改 `<DSH_REPO>`。
 - Anchored Standard/普通 Native 是必须支持的主要组合。
 - Standard、Plan、permission、安全、approval、模型路由和业务工具不因初始 capsule改变结构；允许 messages 在 owner 后增加唯一 capsule。
 - complete/minimal 若运行正常 owner turn，应获得相同初始 capsule；能合法调用 prepare 时支持 refresh，不能时仍以初始 capsule安全完成。
@@ -275,7 +281,7 @@ next owner turn
 
 ## 明确禁止修改的内容
 
-- `D:\ai\deepseek-harness` 的任何源码、文档、配置、测试、lockfile 或 Git 状态
+- `<DSH_REPO>` 的任何源码、文档、配置、测试、lockfile 或 Git 状态
 - DSH shipped preset/Profile、用户 DSH Home、MistyMoon 私有目录
 - `packages/memory/**`、`packages/settings-ui/**`、Importer、PersonaDocument schema、Bundle 业务逻辑和 `cordis.patch.yml`
 - DSH Coding、tools、Plan、permission、approval、安全、模型路由或 Agent Loop

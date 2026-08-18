@@ -4,8 +4,11 @@
  */
 
 import { spawn } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+
+export * from './work-preset-provisioner.js'
 
 const PROFILE_NAME = 'web'
 
@@ -56,6 +59,12 @@ function commandInvocation(command: string, args: readonly string[]): { executab
   const packageManager = process.env.npm_execpath
   if (command === 'pnpm' && packageManager !== undefined) {
     return { executable: process.execPath, args: [packageManager, ...args] }
+  }
+  if (command === 'pnpm' && process.platform === 'win32') {
+    const corepackPnpm = join(dirname(process.execPath), 'node_modules', 'corepack', 'dist', 'pnpm.js')
+    if (existsSync(corepackPnpm)) {
+      return { executable: process.execPath, args: [corepackPnpm, ...args] }
+    }
   }
   return { executable: command === 'pnpm' && process.platform === 'win32' ? 'pnpm.cmd' : command, args }
 }

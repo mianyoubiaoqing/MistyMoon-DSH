@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "id": "owner-persona-neutral-v1",
+  "displayName": "Owner Fixture",
+  "preferences": ["Prefer cited, reversible decisions."],
+  "mustNotBeOverwrittenByCharacterImport": true
+}

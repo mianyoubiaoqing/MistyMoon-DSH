@@ -8,18 +8,35 @@ import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import type { PreStepDecision } from '@deepseek-ai/dsh-agent'
+import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type UserMessage } from '@deepseek-ai/dsh-llm'
-import { defineTool, type ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
+import { defineTool, type ToolExecution, type ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
+import type {
+  CompanionMemoryArchive,
+  ConfirmedMemoryImport,
+  ConfirmedMemoryImportResult,
+  ExplicitMemoryObservation,
+  MemoryCandidate,
+  MemoryCandidateDecision,
+  MemoryCandidateList,
+  MemoryCandidateProposal,
+  MemoryForget,
+  MemoryList,
+  MemoryRecall,
+  MemoryRecord,
+  MemoryReplace,
+  MemoryVisibility,
+} from './contracts.js'
 import { DEFAULT_RECALL_LIMIT, loadMemoryRuntimeSettings } from './runtime-settings.js'
 
+export * from './contracts.js'
 export * from './runtime-settings.js'
 
 /** Cordis plugin name and durable user-message source id. */
 export const name = 'mistymoon-memory'
 
 /** Agent pre-step waterfall used for durable memory projection. */
-export const inject = ['agents', 'tools']
+export const inject = ['agents', 'tools', 'mistymoonOwnerEligibility']
 
 /** Memory plugin configuration. */
 export interface Config {
@@ -37,122 +54,6 @@ export const Config: z<Config> = z.object({
   recallLimit: z.number().step(1).min(1).max(20).default(DEFAULT_RECALL_LIMIT),
   settingsPath: z.string(),
 })
-
-/** Owner-governed visibility retained with every memory. */
-export type MemoryVisibility = 'personal' | 'confidential'
-
-/** Current append-only companion memory record. */
-export interface MemoryRecord {
-  schemaVersion: 1
-  id: string
-  createdAt: string
-  content: string
-  visibility: MemoryVisibility
-  sourceMessageId: string
-  sourceCandidateId?: string
-  supersedesMemoryId?: string
-  status: 'confirmed' | 'forgotten' | 'superseded'
-}
-
-/** Owner-reviewable memory that is never recalled before approval. */
-export interface MemoryCandidate {
-  schemaVersion: 1
-  event: 'candidate'
-  id: string
-  createdAt: string
-  content: string
-  visibility: MemoryVisibility
-  sourceMessageId: string
-  status: 'pending' | 'approved' | 'rejected'
-}
-
-/** Input for proposing a memory without activating it. */
-export interface MemoryCandidateProposal {
-  sourceMessageId: string
-  content: string
-  visibility: MemoryVisibility
-}
-
-/** Input for resolving one pending candidate. */
-export interface MemoryCandidateDecision {
-  candidateId: string
-  sourceMessageId: string
-}
-
-/** Query over the candidate review queue. */
-export interface MemoryCandidateList {
-  includeResolved?: boolean
-  limit?: number
-}
-
-/** Input for retiring one memory without deleting its audit history. */
-export interface MemoryForget {
-  memoryId: string
-  sourceMessageId: string
-}
-
-/** Input for replacing one active memory with a corrected value. */
-export interface MemoryReplace {
-  memoryId: string
-  sourceMessageId: string
-  content: string
-}
-
-/** Trusted import input produced by an explicit migration adapter. */
-export interface ConfirmedMemoryImport {
-  sourceMessageId: string
-  content: string
-  createdAt: string
-  visibility: MemoryVisibility
-}
-
-/** Whether a confirmed import appended a record or matched an earlier source. */
-export interface ConfirmedMemoryImportResult {
-  memory: MemoryRecord
-  imported: boolean
-}
-
-/** Query over the current archive view. */
-export interface MemoryList {
-  includeInactive?: boolean
-  limit?: number
-}
-
-/** Input message that may carry an explicit remember request. */
-export interface ExplicitMemoryObservation {
-  sourceMessageId: string
-  text: string
-}
-
-/** Query over confirmed memories in this private archive. */
-export interface MemoryRecall {
-  query: string
-  limit?: number
-}
-
-/** Small interface hiding parsing, deduplication, ranking, and JSONL durability. */
-export interface CompanionMemoryArchive {
-  /** Persist an explicit remember request, or return undefined for an ordinary message. */
-  observeExplicit(input: ExplicitMemoryObservation): Promise<MemoryRecord | undefined>
-  /** Return confirmed memories ranked for the supplied query. */
-  recall(input: MemoryRecall): MemoryRecord[]
-  /** List recent memories, optionally including retired records. */
-  list(input?: MemoryList): MemoryRecord[]
-  /** Retire one memory while retaining its append-only audit history. */
-  forget(input: MemoryForget): Promise<MemoryRecord>
-  /** Append a corrected memory and retire the prior value atomically. */
-  replace(input: MemoryReplace): Promise<MemoryRecord>
-  /** Append one validated migration record, idempotently by source id. */
-  importConfirmed(input: ConfirmedMemoryImport): Promise<ConfirmedMemoryImportResult>
-  /** Propose a memory that remains inactive until explicit owner approval. */
-  propose(input: MemoryCandidateProposal): Promise<MemoryCandidate>
-  /** List pending review items, optionally including resolved audit history. */
-  listCandidates(input?: MemoryCandidateList): MemoryCandidate[]
-  /** Promote one pending candidate into confirmed memory. */
-  approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord>
-  /** Reject one pending candidate without making it recallable. */
-  rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate>
-}
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -797,6 +698,34 @@ function boundedListLimit(limit: number | undefined): number {
   return resolved
 }
 
+interface MemoryOwnerEligibility {
+  ownerMessages(agent: Agent, messages: readonly UserMessage[]): readonly UserMessage[]
+  evaluateCurrentTurn(agent: Agent): { readonly eligible: boolean }
+}
+
+function ownerEligibility(ctx: Context): MemoryOwnerEligibility {
+  return ctx.get('mistymoonOwnerEligibility', true) as MemoryOwnerEligibility
+}
+
+const MEMORY_TOOL_NAMES = new Set([
+  'memory_candidate_propose',
+  'memory_candidate_list',
+  'memory_candidate_approve',
+  'memory_candidate_reject',
+  'memory_list',
+  'memory_forget',
+  'memory_replace',
+])
+
+function memoryOwnerGuard(ctx: Context, execution: Readonly<ToolExecution>): string | undefined {
+  if (!MEMORY_TOOL_NAMES.has(execution.name)) return undefined
+  const agent = execution.agent
+  if (agent !== undefined && ownerEligibility(ctx).evaluateCurrentTurn(agent).eligible) {
+    return undefined
+  }
+  return 'MistyMoon memory tools require an authenticated Owner request in the active top-level turn.'
+}
+
 function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): void {
   ctx.tools.register(defineTool({
     name: 'memory_candidate_propose',
@@ -1017,11 +946,15 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   }
   const archive = await openMemoryArchive({ path: config.path })
   ctx.effect(() => ctx.provide('mistymoonMemory', archive), 'mistymoon-memory: shared archive')
+  ctx.effect(
+    () => ctx.tools.guard((execution) => memoryOwnerGuard(ctx, execution)),
+    'mistymoon-memory: Owner Eligibility tool guard',
+  )
   registerMemoryTools(ctx, archive)
-  ctx.on('agent/pre-step', async (_payload, next): Promise<PreStepDecision> => {
+  ctx.on('agent/pre-step', async ({ agent }, next): Promise<PreStepDecision> => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
-    const ownerMessages = decision.messages.filter(message => message.source.kind === 'user')
+    const ownerMessages = ownerEligibility(ctx).ownerMessages(agent, decision.messages)
     for (const message of ownerMessages) {
       const text = userText(message)
       if (text !== '') await archive.observeExplicit({ sourceMessageId: message.id, text })

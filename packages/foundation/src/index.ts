@@ -9,8 +9,10 @@ import z from '@deepseek-ai/schemastery'
 import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-tools'
 import { fileURLToPath } from 'node:url'
-import { finalReplyTool, PersonaTurnDeliveryCoordinator } from './final-reply.js'
+import { finalReplyTool, PersonaTurnDeliveryCoordinator, type PersonaOwnerEligibility } from './final-reply.js'
 import { initializePersona } from './persona-home.js'
+import { PublishedPersonaProjection } from './persona-projection.js'
+import { RP_HOST_PRESET_ID } from './rp-host-identity.js'
 import { isRoleplayMode, MIN_TURN_VOICE_MAX_CHARS, RoleplayController, type RoleplayMode } from './roleplay.js'
 
 export * from './persona-document.js'
@@ -19,12 +21,14 @@ export * from './persona-workspace.js'
 export * from './publication.js'
 export * from './roleplay.js'
 export * from './final-reply.js'
+export * from './persona-projection.js'
+export * from './rp-host-identity.js'
 
 /** Cordis plugin name. */
 export const name = 'mistymoon-foundation'
 
 /** The official DSH tool registry that owns the finalization tool. */
-export const inject = ['tools']
+export const inject = ['tools', 'mistymoonOwnerEligibility']
 
 /** Conservative default UTF-16 character budget for one owner-tail capsule. */
 export const DEFAULT_TURN_VOICE_MAX_CHARS = 1200
@@ -58,21 +62,27 @@ const PERSONA_TEMPLATE = fileURLToPath(new URL('../personas/template/persona.jso
  */
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const initialized = await initializePersona({ privateHome: config.home, templatePath: PERSONA_TEMPLATE })
+  const personaProjection = await PublishedPersonaProjection.load(initialized.path)
+  const ownerEligibility = ctx.get('mistymoonOwnerEligibility', true) as PersonaOwnerEligibility
   const defaultMode = config.defaultRoleplayMode ?? 'companion'
   const controller = new RoleplayController(defaultMode)
   const coordinator = new PersonaTurnDeliveryCoordinator({
+    ownerEligibility,
     defaultMode,
     personaPath: initialized.path,
     turnVoiceMaxChars: config.turnVoiceMaxChars ?? DEFAULT_TURN_VOICE_MAX_CHARS,
+    deliveryStrategy: agent => agent.session.header.agentPreset === RP_HOST_PRESET_ID
+      ? 'rp-host-system'
+      : 'legacy-output-profile',
     report: (message) => ctx.logger.warn(message),
   })
   ctx.effect(() => ctx.provide('mistymoonRoleplay', controller), 'mistymoon-foundation: RP controller')
+  ctx.effect(() => ctx.provide('mistymoonPersonaProjection', personaProjection), 'mistymoon-foundation: published Persona projection')
   ctx.effect(() => ctx.tools.register(finalReplyTool(coordinator)), 'mistymoon-foundation: final reply tool')
   ctx.inject(['commands'], (commandCtx) => commandCtx.commands.register({
     name: 'rp',
     description: 'Select MistyMoon RP presentation without changing the DSH agent preset or mode',
     input: { hint: '[off|companion|immersive]' },
-    recordInput: false,
     handler: ({ agent, rawInput }) => {
       const requested = rawInput.trim()
       if (requested === '') {

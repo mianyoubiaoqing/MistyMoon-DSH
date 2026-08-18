@@ -4,9 +4,13 @@ import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
-import type { MemoryCandidate } from '@mistymoon/dsh-memory'
-import type { CharacterCardPersonaMapping } from '@mistymoon/dsh-foundation/character-card'
-import type { MistyMoonCharacterCardPreview, MistyMoonSettingsSnapshot } from '../index.js'
+import type {
+  CharacterCardPersonaMapping,
+  MemoryCandidate,
+  MistyMoonCharacterCardPreview,
+  MistyMoonSettingsSnapshot,
+  MistyMoonWorkModelSnapshot,
+} from '../contracts.js'
 import { MistyMoonSettingsTab, type MistyMoonSettingsTabInjected } from './MistyMoonSettingsTab.js'
 import { en, zh, type MistyMoonSettingsLocaleKey } from './locales.js'
 
@@ -79,6 +83,17 @@ function characterCardPreview(value: unknown): MistyMoonCharacterCardPreview {
   return value as MistyMoonCharacterCardPreview
 }
 
+function workModelSnapshot(value: unknown): MistyMoonWorkModelSnapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('invalid MistyMoon Work model response')
+  }
+  const record = value as Record<string, unknown>
+  if (typeof record.selection !== 'object' || record.selection === null || !Array.isArray(record.options)) {
+    throw new Error('invalid MistyMoon Work model response')
+  }
+  return value as unknown as MistyMoonWorkModelSnapshot
+}
+
 /** Register the MistyMoon tab in the Plugins settings section. */
 export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'mistymoon-settings-ui: dictionaries')
@@ -110,6 +125,21 @@ export function apply(ctx: ClientContext): void {
       requestId: crypto.randomUUID(),
     })
     if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+  }
+  const readWorkModel = async (): Promise<MistyMoonWorkModelSnapshot> => {
+    const result = await connection.rpc.call('/mistymoon-settings', 'work-model-read', {})
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+    return workModelSnapshot(result.value)
+  }
+  const saveWorkModel = async (input: {
+    expectedRevision: number
+    provider: string
+    model: string
+    ownerConfirmed: boolean
+  }): Promise<MistyMoonWorkModelSnapshot> => {
+    const result = await connection.rpc.call('/mistymoon-settings', 'work-model-save', input)
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+    return workModelSnapshot(result.value)
   }
   const cardPayload = (fileName: string, contentBase64: string, mapping: CharacterCardPersonaMapping) => ({
     fileName, contentBase64, mapping,
@@ -149,6 +179,8 @@ export function apply(ctx: ClientContext): void {
     previewCharacterCard,
     applyCharacterCard,
     listCandidates: callCandidates,
+    readWorkModel,
+    saveWorkModel,
     approveCandidate: candidateId => decideCandidate('candidate-approve', candidateId),
     rejectCandidate: candidateId => decideCandidate('candidate-reject', candidateId),
   }
