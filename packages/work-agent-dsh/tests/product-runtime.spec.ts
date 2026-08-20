@@ -36,7 +36,7 @@ describe('RP Work product runtime', () => {
     expect(runtime.publication(parent)).toMatchObject({
       version: 1,
       presetId: 'anchored-standard',
-      nativePresetId: 'mistymoon-work-anchored-standard-v1',
+      nativePresetId: 'mistymoon-work-anchored-standard-v2',
       route: {
         provider: 'deepseek-official',
         model: 'deepseek-v4-flash',
@@ -69,7 +69,7 @@ describe('RP Work product runtime', () => {
     expect(frozenBefore.presetId).toBe('anchored-standard')
     expect(runtime.publication(parent)).toMatchObject({
       presetId: 'anchored-standard-jspace',
-      nativePresetId: 'mistymoon-work-anchored-standard-jspace-v1',
+      nativePresetId: 'mistymoon-work-anchored-standard-jspace-v2',
       route: {
         provider: 'deepseek-official',
         model: 'deepseek-v4-flash',

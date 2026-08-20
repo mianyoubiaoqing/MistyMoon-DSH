@@ -12,16 +12,23 @@ import {
 
 const unlimited = { maxArchiveBytes: Number.MAX_SAFE_INTEGER, maxTransactionBytes: Number.MAX_SAFE_INTEGER }
 
-function memory(id: string, sourceMessageId: string): MemoryDomainEvent {
-  return {
-    schemaVersion: 1,
-    id,
+function memory(id: string, sourceMessageId: string): MemoryDomainEvent[] {
+  const observationId = `observation-${id}`
+  return [{
+    schemaVersion: 1, event: 'observation', id: observationId,
+    ownerId: 'owner-fixture', authority: 'local-dsh-host-rpc',
+    scope: { version: 1, kind: 'companion-reality' },
+    source: { kind: 'dsh-message', id: sourceMessageId }, observedAt: '2026-08-18T00:00:00.000Z',
+  }, {
+    schemaVersion: 2,
+    id, ownerId: 'owner-fixture', scope: { version: 1, kind: 'companion-reality' },
+    observationId, memoryKind: 'summary', recordedAt: '2026-08-18T00:00:00.000Z',
     createdAt: '2026-08-18T00:00:00.000Z',
     content: `Neutral format fixture ${id}`,
     visibility: 'personal',
     sourceMessageId,
     status: 'confirmed',
-  }
+  }]
 }
 
 async function readyArchive(): Promise<{ path: string, lines: string[] }> {
@@ -33,8 +40,8 @@ async function readyArchive(): Promise<{ path: string, lines: string[] }> {
     createTransactionId: () => ids.shift() ?? 'unexpected-transaction',
     now: () => new Date('2026-08-18T00:00:00.000Z'),
   })
-  await storage.transact(() => ({ events: [memory('memory-1', 'source-1')], result: undefined }))
-  await storage.transact(() => ({ events: [memory('memory-2', 'source-2')], result: undefined }))
+  await storage.transact(() => ({ events: memory('memory-1', 'source-1'), result: undefined }))
+  await storage.transact(() => ({ events: memory('memory-2', 'source-2'), result: undefined }))
   return { path, lines: (await readFile(path, 'utf8')).trimEnd().split(/\r?\n/u) }
 }
 
@@ -54,7 +61,7 @@ describe('memory v2 format inspection', () => {
       issue: 'digest-mismatch',
       damage(lines: string[]): string[] {
         const transaction = JSON.parse(lines[1]!) as { events: Array<{ content: string }> }
-        transaction.events[0]!.content = 'Neutral modified fixture'
+        transaction.events[1]!.content = 'Neutral modified fixture'
         return [lines[0]!, JSON.stringify(transaction), lines[2]!]
       },
     },
@@ -88,12 +95,12 @@ describe('memory v2 format inspection', () => {
   it.each([
     {
       name: 'duplicate id',
-      events: [memory('memory-shared', 'source-1'), memory('memory-shared', 'source-2')],
+      events: [...memory('memory-shared', 'source-1'), ...memory('memory-shared', 'source-2')],
       issue: 'duplicate-id',
     },
     {
       name: 'duplicate source',
-      events: [memory('memory-1', 'source-shared'), memory('memory-2', 'source-shared')],
+      events: [...memory('memory-1', 'source-shared'), ...memory('memory-2', 'source-shared')],
       issue: 'duplicate-source',
     },
     {
@@ -109,7 +116,7 @@ describe('memory v2 format inspection', () => {
     await expect(storage.transact(() => ({ events, result: undefined })))
       .rejects.toMatchObject({ code: 'MEMORY_ARCHIVE_QUARANTINED' })
     expect(storage.snapshot()?.records).toHaveLength(0)
-    expect(MemoryArchiveStorage.open({ path }).then(value => value.inspection()))
+    await expect(MemoryArchiveStorage.open({ path }).then(value => value.inspection()))
       .resolves.toMatchObject({ state: 'quarantined', issues: [{ code: issue }] })
   })
 

@@ -1,11 +1,14 @@
 {
   "name": "@mistymoon/dsh-installer",
-  "version": "0.0.1-rc.5",
-  "description": "Development preview installer for MistyMoon DSH profiles",
+  "version": "0.0.1-rc.6",
+  "description": "Owner-confirmed bundle and Agent preset installer for MistyMoon DSH",
   "private": true,
   "type": "module",
   "license": "MIT",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json"
   }
 }

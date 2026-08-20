@@ -37,6 +37,11 @@ export class DshOwnerEligibilityService {
     })
   }
 
+  /** Deployment-owned identity for trusted loopback governance adapters. */
+  trustedLocalOwner(): { readonly ownerId: string; readonly authority: typeof LOCAL_DSH_HOST_RPC_AUTHORITY } {
+    return { ownerId: this.#ownerId, authority: LOCAL_DSH_HOST_RPC_AUTHORITY }
+  }
+
   /** Evaluates one proposed or durable DSH user-role message. */
   evaluateMessage(agent: Agent, message: UserMessage): OwnerEligibilityDecisionV1 {
     const rpcId = rpcIdOf(message.source)

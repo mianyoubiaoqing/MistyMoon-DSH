@@ -10,6 +10,7 @@ import ToolRuntime from '@deepseek-ai/dsh-tools'
 import * as IdentityPlugin from '@mistymoon/dsh-identity'
 import { describe, expect, it } from 'vitest'
 import * as MemoryPlugin from '../src/index.js'
+import { PERSONAL_COMPANION_ACCESS } from './fixtures.js'
 
 function sessionAgent(session: Session): Agent {
   return {
@@ -39,6 +40,7 @@ describe('MistyMoon memory plugin', () => {
     await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
     await ctx.plugin(MemoryPlugin, { path: join(root, 'memory.jsonl'), recallLimit: 4 })
     expect(ctx.mistymoonMemory).toBeDefined()
+    expect(ctx.mistymoonMemoryGovernance).toBeDefined()
     const session = Session.create(SessionId('memory-session'))
     const agent = sessionAgent(session)
     const remember = createUserMessage({
@@ -110,10 +112,10 @@ describe('MistyMoon memory plugin', () => {
     )
 
     expect(decision).toEqual({ kind: 'enter', messages: [childPrompt] })
-    expect(ctx.mistymoonMemory.list()).toEqual([])
+    expect(ctx.mistymoonMemory.list({ context: PERSONAL_COMPANION_ACCESS })).toEqual([])
   })
 
-  it('keeps the owner turn running while a v1 archive awaits explicit migration', async () => {
+  it('keeps the owner turn running while a v1 archive awaits explicit scope migration', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-migration-required-plugin-'))
     const path = join(root, 'memory.jsonl')
     await writeFile(path, `${JSON.stringify({
@@ -146,6 +148,6 @@ describe('MistyMoon memory plugin', () => {
     )
 
     expect(decision).toEqual({ kind: 'enter', messages: [ownerMessage] })
-    expect(ctx.mistymoonMemory.inspection()).toMatchObject({ state: 'migration-required' })
+    expect(ctx.mistymoonMemory.inspection()).toMatchObject({ state: 'scope-migration-required' })
   })
 })

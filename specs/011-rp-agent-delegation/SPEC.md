@@ -6,9 +6,9 @@
 
 ## 结论
 
-正式 preset id 为 `mistymoon-rp-host-v1`。DSH 拓扑上的 parent 是产品语义中的 `RP Host Agent`：负责 Owner-facing RP、完整已发布 Persona、只读 Web 搜索/阅读、澄清、风险确认、委派和最终交付；原生 spawn child 是 `Work Agent`：负责编码、文件修改、长研究、审查、规则查询与验证。
+当前正式 preset id 为 `mistymoon-rp-host-v2`；`v1` 只作为版本化更新/回滚资产保留。DSH 拓扑上的 parent 是产品语义中的 `RP Host Agent`：负责 Owner-facing RP、完整已发布 Persona 身份、只读 Web 搜索/阅读、当前 Session 工作区内的只读文件检查、澄清、风险确认、委派和最终交付；原生 spawn child 是 `Work Agent`：负责编码、文件修改、长研究、审查、规则查询与验证。
 
-RP Host Composition 是 preset 专属策略。它占用 DSH `deployment:persona` slot，DSH Harness identity、安全、权限、协作模式、工具规则和 Owner 当前请求仍优先；system snapshot 由原生 `request/header` 持久化。该 preset 隐藏 final-reply 工具并直接自然结束 Owner turn。其他 preset 不采用此策略，继续沿用 001 的双阶段 output-profile/final-reply 路径。
+RP Host Composition 是 preset 专属策略。它占用 DSH `deployment:persona` slot，使已发布 Persona 成为唯一模型可见运行时身份，并精确隐藏 `harness:identity`；DSH 安全、权限、审批、协作模式、工具治理和 Owner 当前请求仍优先，system snapshot 由原生 `request/header` 持久化。该 preset 隐藏 final-reply 工具并直接自然结束 Owner turn。其他 preset 不采用此策略，继续沿用 001 的双阶段 output-profile/final-reply 路径。
 
 正式 thinking 通过 DSH 官方 DeepSeek Adapter 的 model/reasoning 配置启用，不通过“逐步思考”等 prompt 技巧激活，也不向用户索取或展示完整 chain-of-thought。编码 Work Agent 的默认层固定为 Anchored Standard；Routing Suite 不属于产品依赖或 capability 前置条件，J-Space 仍作为单独受控实验层。该选择不等于对任意版本、任务或组合顺序作无条件质量保证。
 
@@ -77,7 +77,7 @@ Preset profile 的选择语义由 014 单独拥有：spawn-time selection 可以
 
 Work Agent 返回：`status`、`summary`、`changedFiles`、`checksRun`、`risks`、`needsUserAction` 和必要的原样 artifacts。标准工具未公开 `outputSchema` 时，必须在消费边界校验固定文本/JSON envelope，不能假设 DSH 已保证结构。
 
-v1 envelope 固定为单个纯文本 block 中的严格 JSON：`version: 1`；`status` 为 `completed|blocked|failed`；`changedFiles`、`risks`、`needsUserAction` 为有界字符串数组；`checksRun` 逐项保存原命令、`passed|failed|not-run` 和结果摘要；`artifacts` 逐项保存 `text|code|patch|command-output|citation`、标签与有界原文。未知字段、Markdown fence、多 block、非文本、空必填值或超限内容均 fail closed。只有 DSH stop reason 为 `completed` 时才尝试解析；解析失败把结果收敛为中性 `error`，不得把 partial output 冒充 completed report。
+v1 envelope 固定为单个纯文本 block 中的严格 JSON：`version: 1`；`status` 为 `completed|blocked|failed`；`changedFiles`、`risks`、`needsUserAction` 为有界字符串数组；`checksRun` 逐项保存原命令、`passed|failed|not-run` 和结果摘要；`artifacts` 逐项保存 `text|code|patch|command-output|citation`、标签与有界原文。DSH thinking 模型可在内部结果中附带 reasoning block，但消费边界在向 RP Host 交付 completed 或 partial `SubagentResult` 前必须全部丢弃 reasoning，且仍只接受恰好一个 text report block；其他非文本、未知字段、Markdown fence、多 text block、空必填值或超限内容均 fail closed。只有 DSH stop reason 为 `completed` 时才尝试解析；解析失败把结果收敛为中性 `error`，不得把 partial output 冒充 completed report。
 
 RP Host Agent 可以在 Work Report 外围使用 Persona 语气，但代码、命令、规则引文、数值、测试结果和风险逐字段保持不变。
 
@@ -88,13 +88,13 @@ RP Host Agent 可以在 Work Report 外围使用 Persona 语气，但代码、�
 必须：
 
 - 维持 Persona、关系与 Experience Mode；
-- 使用 `web_search` / `web_fetch` 搜索和阅读当前信息，并保留来源；
+- 使用 `web_search` / `web_fetch` 搜索和阅读当前信息，并使用只读的 `read` / `grep` / `glob` 检查当前 Session 工作区文件，保留来源；
 - 澄清目标并取得高风险动作的 Owner 确认；
 - 构造最小技术任务包，选择已资格化的固定 Adapter；
 - 原样交付 Work Report 中的技术事实；
 - 在主 Agent 自身上下文中直接完成唯一 Owner-facing 回复；Work Report 只提供事实，不替主 Agent 发言。
 
-禁止拥有 shell、文件写入、patch、Git、任意代码执行以及会产生外部副作用的浏览器自动化。允许的 Web 能力仅为搜索和读取；登录、表单提交、上传、购买、公开发布等未来能力必须由独立 capability 和 Owner confirmation gate 接入。限制必须由 tool catalog/restriction 强制，不能只写进 Persona。
+禁止拥有 shell、文件写入、patch、Git、任意代码执行以及会产生外部副作用的浏览器自动化。允许的 Web 能力仅为搜索和读取，文件能力仅为当前 Session 工作区内的只读检查；绝对路径、父目录跳出与符号链接的真实目标都不得越界。登录、表单提交、上传、购买、公开发布等未来能力必须由独立 capability 和 Owner confirmation gate 接入。限制必须由封闭 tool catalog 与执行 guard 强制，不能只写进 Persona。
 
 ### Work Agent
 
@@ -125,7 +125,9 @@ DSH rc.7 的 `subagent.history` 能验证 direct-parent address 和持久化 `pa
 
 ### 提示层
 
-保留 DSH safety、permission、Plan/协作模式、AGENTS 和 skill governance。Anchored 的上游 prompt 行为只运行于 Work Agent；若其原始实现清空 context 或替换 persona，兼容层必须在同一请求恢复 protected sections，并用集成快照证明恢复后的实际 prompt。RP Host Agent 不运行这些编码 preset 逻辑。
+保留 DSH safety、permission、approval、Plan/协作模式、AGENTS、skill governance、外部副作用规则和未知 prompt section。只有 DSH 明确标记为可过滤的工具帮助 section 才能移除；rc.7 没有该标记，因此不得按 `tool:*` / `tools:*` 前缀猜测或删除。Anchored 的上游 prompt 行为只运行于 Work Agent；若其原始实现清空 context 或替换 persona，兼容层必须在同一请求恢复 protected sections，并用集成快照证明恢复后的实际 prompt。RP Host Agent 不运行这些编码 preset 逻辑。
+
+RP Host Composition 只使用 DSH 公开 current-scope/preset/tool-restriction API 或 preset 显式注入，不遍历 Context 原型或 Symbol 猜测私有 scope。当前实现固定 DSH rc.7；scope 识别或 restriction 安装失败时 preset mount fail closed，不投影完整 Persona。每次 system-prompt assembly 都重新收敛封闭 tool catalog，monotonic execution guard 同时阻断后注册/HMR 工具，工具面不得静默扩大。
 
 Anchored Standard 的 durable phase 和小工具目录作为必选上游逻辑运行：Work Agent 首请求只见必要编码工具，后续依据 durable tool/session events 在固定 allowlist 内 promotion；compaction 后从日志重建。它不是 thinking 的必要条件，但属于用户要求的编码质量组合。
 
@@ -151,11 +153,11 @@ interface RpWorkDelegationV1 {
 
 | 角色 | provider | model | reasoning |
 | --- | --- | --- | --- |
-| RP Host Agent | `deepseek-official` | `deepseek-v4-flash` | `high` |
+| RP Host Agent | DSH Web UI 选定的 provider/model（不固定） | DSH Web UI 选定的 provider/model（不固定） | 由所选模型决定 |
 | Flash Work Agent | `deepseek-official` | `deepseek-v4-flash` | `max` |
 Pro route 暂不属于产品能力面；未来启用必须新增同等级 route 验收，不能复用 Flash 的结果。
 
-DSH rc.7 Adapter 广告 `off | low | high | max`；本 preset 的固定 Work route 仍只使用 `max`。Role Gate 的 `agent/request` listener 必须先 `await next()`，只对可认证的本 preset root/child 写入 `LlmCallConfig`；不能把所有 DSH child 强制路由。
+DSH rc.7 Adapter 广告 `off | low | high | max`；Work 的固定 route 仍只使用 `max`。RP Host 不安装模型覆盖，沿用 DSH Web UI 的会话选择。Role Gate 的 `agent/request` listener 必须先 `await next()`，只对可认证的本 preset root/child 写入 `LlmCallConfig`；不能把所有 DSH child 强制路由。
 
 首次实际请求校验 `request/header` 的 provider/model/reasoningEffort。部署把 thinking 锁为 disabled、模型不可用或 policy 拒绝 max 时，在网络 I/O 前或首次可判断点明确失败；不静默退到 high/off，也不修改 API key、base URL 或用户 Profile。
 
@@ -172,7 +174,7 @@ J-Space 通过 skill loader 按需加载：fast 不加载，full 只取相关模
 
 ## 预设交付
 
-套件可携带中性、版本化 preset 资产作为安装源，但 rc.7 不能靠 `cordis.patch.yml` 可靠增加 packaged preset root。经用户确认后，Installer 可预览并 provision 到 `<DSH_HOME>/.agent-presets/mistymoon-work-anchored-standard-v1`：
+套件可携带中性、版本化 preset 资产作为安装源，但 rc.7 不能靠 `cordis.patch.yml` 可靠增加 packaged preset root。经用户确认后，Installer 可预览并 provision 到 `<DSH_HOME>/.agent-presets/mistymoon-work-anchored-standard-v2`，同时保留旧版本用于显式回滚：
 
 - 目标不存在才首次创建；
 - 目标存在时拒绝覆盖，并展示版本/差异；
@@ -213,10 +215,6 @@ J-Space 通过 skill loader 按需加载：fast 不加载，full 只取相关模
 
 只有 A/B 证明多轮收益且产品需要后台工作后，另写 Spec 引入 continuable、list/send/interrupt/report、冷恢复和孤儿清理。
 
-## 尚待用户决定
+## 已确认与发布前待办
 
-1. 已决定 Flash-only 首发；Owner 可在设置页选择 DSH 已注册模型，但工具参数和模型本身不能任意选择 provider/model，Pro 等新增能力面仍需独立工具与资格门。
-2. 是否接受 RP Host 固定 Flash/high，编码 child 固定 max；本规范推荐先按此 A/B，再根据成本提供显式节省档。
-3. 是否接受首次 preset provision 与每次升级都由用户确认；rc.7 下本规范要求接受。
-4. 是否将 Owner Eligibility 作为先于 preset 的独立 P0 叶子 Spec；本规范要求是。
-5. 固定编码评测任务集、重复次数和通过阈值仍需在产品 provider 实现前记录为可复现清单。
+Owner 已确认 Flash-only 首发、RP Host 沿用 DSH Web UI 会话模型、Work child 固定 `max`、首次 preset provision/升级均需确认，并已把 Owner Eligibility 作为独立 P0 前置。发布前仍需把固定编码评测任务集、重复次数和通过阈值记录为可复现清单。

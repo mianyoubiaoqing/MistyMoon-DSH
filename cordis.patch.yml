@@ -26,6 +26,7 @@
         disposeTimeoutMs: 5000
         maxArchiveBytes: 67108864
         maxTransactionBytes: 1048576
+        channelDisclosure: owner-confidential
 
     - id: mistymoon-work-agent-runtime
       name: '@mistymoon/dsh/work-agent-dsh'

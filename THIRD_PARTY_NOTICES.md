@@ -2,7 +2,8 @@
 
 ## Anchored Standard compatibility preset
 
-`packages/work-agent/presets/mistymoon-work-anchored-standard-v1/` contains a
+`packages/work-agent/presets/mistymoon-work-anchored-standard-v1/` and
+`packages/work-agent/presets/mistymoon-work-anchored-standard-v2/` contain a
 compatibility derivative of the MIT-licensed `dsh-anchored-standard`
 repository at commit `25f21aefaf8ddc414da54d2e581e43740d977c6e`. It retains the
 Anchored durable tool phase. MistyMoon's Policy Shield changes preserve

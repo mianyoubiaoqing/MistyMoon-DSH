@@ -19,6 +19,7 @@ import type {
   MemoryCandidateList,
   MemoryCandidateProposal,
   MemoryForget,
+  MemoryGovernanceService,
   MemoryList,
   MemoryRecall,
   MemoryRecord,
@@ -26,6 +27,18 @@ import type {
   MemoryVisibility,
 } from './contracts.js'
 import { DEFAULT_RECALL_LIMIT, loadMemoryRuntimeSettings } from './runtime-settings.js'
+import {
+  canDiscloseMemory,
+  isMemoryCurrentlyValid,
+  memoryScopeEquals,
+  memorySourceKey,
+  parseMemoryAccessContextV1,
+  validateMemoryValidity,
+  type MemoryAccessContextV1,
+  type MemoryKind,
+  type MemoryObservationSourceKind,
+  type MemoryObservationV1,
+} from './domain.js'
 import {
   MemoryArchiveError,
   MemoryArchiveStorage,
@@ -37,6 +50,7 @@ import {
 } from './storage/index.js'
 
 export * from './contracts.js'
+export * from './domain.js'
 export * from './runtime-settings.js'
 
 /** Cordis plugin name and durable user-message source id. */
@@ -63,6 +77,8 @@ export interface Config {
   maxArchiveBytes?: number
   /** Maximum accepted size of one transaction envelope. */
   maxTransactionBytes?: number
+  /** Trusted local-channel policy; request text alone can never expand this value. */
+  channelDisclosure?: MemoryAccessContextV1['channelDisclosure']
 }
 
 /** Runtime schema for the memory plugin. */
@@ -75,12 +91,15 @@ export const Config: z<Config> = z.object({
   disposeTimeoutMs: z.number().step(1).min(100).max(60_000).default(5_000),
   maxArchiveBytes: z.number().step(1).min(1_048_576).max(1_073_741_824).default(67_108_864),
   maxTransactionBytes: z.number().step(1).min(1_024).max(16_777_216).default(1_048_576),
+  channelDisclosure: z.union(['personal-only', 'owner-confidential']).default('personal-only'),
 })
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
     /** Process-wide MistyMoon archive shared by tools and local governance UI. */
     mistymoonMemory: CompanionMemoryArchive
+    /** Loopback-only governance facade; clients cannot select Owner or scope. */
+    mistymoonMemoryGovernance: MemoryGovernanceService
   }
 }
 
@@ -149,33 +168,111 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     return this.storage.dispose()
   }
 
+  #context(value: MemoryAccessContextV1): MemoryAccessContextV1 {
+    return parseMemoryAccessContextV1(value)
+  }
+
+  #sourceKey(
+    context: MemoryAccessContextV1,
+    kind: MemoryObservationSourceKind,
+    sourceId: string,
+  ): string {
+    return memorySourceKey({
+      ownerId: context.ownerId,
+      authority: context.authority,
+      scope: context.scope,
+      source: { kind, id: sourceId },
+    })
+  }
+
+  #observation(
+    context: MemoryAccessContextV1,
+    kind: MemoryObservationSourceKind,
+    sourceId: string,
+    observedAt: string,
+  ): MemoryObservationV1 {
+    return {
+      schemaVersion: 1,
+      event: 'observation',
+      id: this.createId(),
+      ownerId: context.ownerId,
+      authority: context.authority,
+      scope: context.scope,
+      source: { kind, id: sourceId },
+      observedAt,
+    }
+  }
+
+  #sameDomain(
+    state: FoldedMemoryState,
+    value: Pick<MemoryRecord | MemoryCandidate, 'ownerId' | 'scope' | 'observationId'>,
+    context: MemoryAccessContextV1,
+  ): boolean {
+    const observation = state.observations.get(value.observationId)
+    return value.ownerId === context.ownerId
+      && memoryScopeEquals(value.scope, context.scope)
+      && observation?.authority === context.authority
+  }
+
+  #target(
+    state: FoldedMemoryState,
+    memoryId: string,
+    context: MemoryAccessContextV1,
+  ): MemoryRecord {
+    const memory = state.byId.get(memoryId)
+    if (memory === undefined || !this.#sameDomain(state, memory, context)) {
+      throw new MemoryArchiveError('memory target is unavailable in the trusted Owner/scope', 'MEMORY_SCOPE_MISMATCH')
+    }
+    return memory
+  }
+
   async observeExplicit(input: ExplicitMemoryObservation): Promise<MemoryRecord | undefined> {
+    const context = this.#context(input.context)
     const content = explicitContent(input.text)
     if (content === undefined) return undefined
     const visibility: MemoryVisibility = /保密|不要告诉|别告诉|不能告诉/u.test(input.text) ? 'confidential' : 'personal'
     return this.storage.transact(state => {
-      const used = state.sources.get(input.sourceMessageId)
+      const sourceKey = this.#sourceKey(context, 'dsh-message', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
       if (used !== undefined) {
-        if (used.kind === 'memory' && used.content === content && used.visibility === visibility) {
+        if (used.kind === 'memory' && used.content === content && used.visibility === visibility
+          && used.memoryKind === input.memoryKind) {
           return { events: [], result: existingMemory(state, used) }
         }
         return conflict(input.sourceMessageId)
       }
+      const timestamp = this.now().toISOString()
+      const observation = this.#observation(context, 'dsh-message', input.sourceMessageId, timestamp)
       const memory: MemoryRecord = {
-        schemaVersion: 1, id: this.createId(), createdAt: this.now().toISOString(), content, visibility,
-        sourceMessageId: input.sourceMessageId, status: 'confirmed',
+        schemaVersion: 2,
+        id: this.createId(),
+        ownerId: context.ownerId,
+        scope: context.scope,
+        observationId: observation.id,
+        memoryKind: input.memoryKind,
+        createdAt: timestamp,
+        recordedAt: timestamp,
+        content,
+        visibility,
+        sourceMessageId: input.sourceMessageId,
+        status: 'confirmed',
       }
-      return { events: [memory], result: memory }
+      return { events: [observation, memory], result: memory }
     })
   }
 
   recall(input: MemoryRecall): MemoryRecord[] {
+    const context = this.#context(input.context)
     const state = this.storage.snapshot()
     if (state === undefined) return []
     const limit = Math.max(0, input.limit ?? 8)
     const query = input.query.trim()
+    const at = input.at ?? this.now().toISOString()
     return state.records
-      .filter(memory => memory.status === 'confirmed')
+      .filter(memory => memory.status === 'confirmed'
+        && this.#sameDomain(state, memory, context)
+        && isMemoryCurrentlyValid(memory, at)
+        && canDiscloseMemory(memory.visibility, context))
       .map(memory => ({ memory, score: query === '' ? 1 : lexicalScore(query, memory.content) }))
       .filter(item => query === '' || item.score > 0)
       .sort((left, right) => right.score - left.score || right.memory.createdAt.localeCompare(left.memory.createdAt))
@@ -183,12 +280,15 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
       .map(item => item.memory)
   }
 
-  list(input: MemoryList = {}): MemoryRecord[] {
+  list(input: MemoryList): MemoryRecord[] {
+    const context = this.#context(input.context)
     const state = this.storage.snapshot()
     if (state === undefined) return []
     const limit = Math.max(0, input.limit ?? 100)
     return state.records
-      .filter(memory => input.includeInactive === true || memory.status === 'confirmed')
+      .filter(memory => this.#sameDomain(state, memory, context)
+        && canDiscloseMemory(memory.visibility, context)
+        && (input.includeInactive === true || memory.status === 'confirmed'))
       .map((memory, index) => ({ memory, index }))
       .toSorted((left, right) => right.memory.createdAt.localeCompare(left.memory.createdAt) || right.index - left.index)
       .slice(0, limit)
@@ -196,98 +296,144 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
   }
 
   async forget(input: MemoryForget): Promise<MemoryRecord> {
+    const context = this.#context(input.context)
     return this.storage.transact(state => {
-      const used = state.sources.get(input.sourceMessageId)
+      const sourceKey = this.#sourceKey(context, 'governance-operation', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
       if (used !== undefined) {
         if (used.kind === 'forget' && used.targetMemoryId === input.memoryId) return { events: [], result: existingMemory(state, used) }
         return conflict(input.sourceMessageId)
       }
-      const memory = state.byId.get(input.memoryId)
-      if (memory === undefined) throw new Error(`memory ${JSON.stringify(input.memoryId)} does not exist`)
+      const memory = this.#target(state, input.memoryId, context)
       if (memory.status !== 'confirmed') throw new Error(`memory ${JSON.stringify(input.memoryId)} is already ${memory.status}`)
+      const timestamp = this.now().toISOString()
+      const observation = this.#observation(context, 'governance-operation', input.sourceMessageId, timestamp)
       const event: MemoryForgottenEvent = {
-        schemaVersion: 1, event: 'forgotten', id: this.createId(), createdAt: this.now().toISOString(),
+        schemaVersion: 2, event: 'forgotten', id: this.createId(), createdAt: timestamp,
+        ownerId: context.ownerId, scope: context.scope, observationId: observation.id,
         memoryId: memory.id, sourceMessageId: input.sourceMessageId,
       }
       memory.status = 'forgotten'
-      return { events: [event], result: memory }
+      return { events: [observation, event], result: memory }
     })
   }
 
   async replace(input: MemoryReplace): Promise<MemoryRecord> {
+    const context = this.#context(input.context)
     const content = input.content.trim()
     if (content === '') throw new Error('replacement memory content must be a non-empty string')
     return this.storage.transact(state => {
-      const used = state.sources.get(input.sourceMessageId)
+      const target = this.#target(state, input.memoryId, context)
+      const memoryKind = input.memoryKind ?? target.memoryKind
+      const validFrom = input.validFrom ?? target.validFrom
+      const validTo = input.validTo ?? target.validTo
+      const sourceKey = this.#sourceKey(context, 'governance-operation', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
       if (used !== undefined) {
-        if (used.kind === 'replace' && used.targetMemoryId === input.memoryId && used.content === content) {
+        if (used.kind === 'replace' && used.targetMemoryId === input.memoryId && used.content === content
+          && used.memoryKind === memoryKind
+          && (input.recordedAt === undefined || used.recordedAt === input.recordedAt)
+          && used.validFrom === validFrom && used.validTo === validTo) {
           return { events: [], result: existingMemory(state, used) }
         }
         return conflict(input.sourceMessageId)
       }
-      const target = state.byId.get(input.memoryId)
-      if (target === undefined) throw new Error(`memory ${JSON.stringify(input.memoryId)} does not exist`)
       if (target.status !== 'confirmed') throw new Error(`memory ${JSON.stringify(input.memoryId)} is already ${target.status}`)
+      const timestamp = this.now().toISOString()
+      const validity = validateMemoryValidity({
+        recordedAt: input.recordedAt ?? timestamp,
+        ...(validFrom === undefined ? {} : { validFrom }),
+        ...(validTo === undefined ? {} : { validTo }),
+      })
+      const observation = this.#observation(context, 'governance-operation', input.sourceMessageId, timestamp)
       const memory: MemoryRecord = {
-        schemaVersion: 1, id: this.createId(), createdAt: this.now().toISOString(), content,
-        visibility: target.visibility, sourceMessageId: input.sourceMessageId,
+        schemaVersion: 2, id: this.createId(), ownerId: context.ownerId, scope: context.scope,
+        observationId: observation.id, memoryKind,
+        createdAt: timestamp, ...validity, content, visibility: target.visibility, sourceMessageId: input.sourceMessageId,
         supersedesMemoryId: target.id, status: 'confirmed',
       }
       target.status = 'superseded'
-      return { events: [memory], result: memory }
+      return { events: [observation, memory], result: memory }
     })
   }
 
   async importConfirmed(input: ConfirmedMemoryImport): Promise<ConfirmedMemoryImportResult> {
+    const context = this.#context(input.context)
     const content = input.content.trim()
     if (content === '') throw new Error('imported memory content must be a non-empty string')
     const createdAt = new Date(input.createdAt)
     if (Number.isNaN(createdAt.getTime())) throw new Error(`invalid imported memory timestamp ${JSON.stringify(input.createdAt)}`)
     const timestamp = createdAt.toISOString()
     return this.storage.transact<ConfirmedMemoryImportResult>(state => {
-      const used = state.sources.get(input.sourceMessageId)
+      const sourceKey = this.#sourceKey(context, 'legacy-import', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
       if (used !== undefined) {
-        if (used.kind === 'memory' && used.content === content && used.visibility === input.visibility && used.createdAt === timestamp) {
+        if (used.kind === 'memory' && used.content === content && used.visibility === input.visibility
+          && used.createdAt === timestamp && used.memoryKind === input.memoryKind
+          && used.validFrom === input.validFrom && used.validTo === input.validTo) {
           return { events: [], result: { memory: existingMemory(state, used), imported: false } }
         }
         return conflict(input.sourceMessageId)
       }
+      const validity = validateMemoryValidity({
+        recordedAt: timestamp,
+        ...(input.validFrom === undefined ? {} : { validFrom: input.validFrom }),
+        ...(input.validTo === undefined ? {} : { validTo: input.validTo }),
+      })
+      const observation = this.#observation(context, 'legacy-import', input.sourceMessageId, timestamp)
       const memory: MemoryRecord = {
-        schemaVersion: 1, id: this.createId(), createdAt: timestamp, content, visibility: input.visibility,
-        sourceMessageId: input.sourceMessageId, status: 'confirmed',
+        schemaVersion: 2, id: this.createId(), ownerId: context.ownerId, scope: context.scope,
+        observationId: observation.id, memoryKind: input.memoryKind, createdAt: timestamp, ...validity,
+        content, visibility: input.visibility, sourceMessageId: input.sourceMessageId, status: 'confirmed',
       }
-      return { events: [memory], result: { memory, imported: true } }
+      return { events: [observation, memory], result: { memory, imported: true } }
     })
   }
 
   async propose(input: MemoryCandidateProposal): Promise<MemoryCandidate> {
+    const context = this.#context(input.context)
     const content = input.content.trim()
     if (content === '') throw new Error('candidate memory content must be a non-empty string')
     const candidate = await this.storage.transact(state => {
-      const used = state.sources.get(input.sourceMessageId)
+      const sourceKey = this.#sourceKey(context, 'governance-operation', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
       if (used !== undefined) {
-        if (used.kind === 'candidate' && used.content === content && used.visibility === input.visibility) {
+        if (used.kind === 'candidate' && used.content === content && used.visibility === input.visibility
+          && used.memoryKind === input.memoryKind
+          && (input.recordedAt === undefined || used.recordedAt === input.recordedAt)
+          && used.validFrom === input.validFrom && used.validTo === input.validTo) {
           const candidate = used.candidateId === undefined ? undefined : state.candidateById.get(used.candidateId)
           if (candidate !== undefined) return { events: [], result: candidate }
         }
         return conflict(input.sourceMessageId)
       }
+      const timestamp = this.now().toISOString()
+      const validity = validateMemoryValidity({
+        recordedAt: input.recordedAt ?? timestamp,
+        ...(input.validFrom === undefined ? {} : { validFrom: input.validFrom }),
+        ...(input.validTo === undefined ? {} : { validTo: input.validTo }),
+      })
+      const observation = this.#observation(context, 'governance-operation', input.sourceMessageId, timestamp)
       const candidate: MemoryCandidate = {
-        schemaVersion: 1, event: 'candidate', id: this.createId(), createdAt: this.now().toISOString(),
+        schemaVersion: 2, event: 'candidate', id: this.createId(), ownerId: context.ownerId, scope: context.scope,
+        observationId: observation.id, memoryKind: input.memoryKind, createdAt: timestamp, ...validity,
         content, visibility: input.visibility, sourceMessageId: input.sourceMessageId, status: 'pending',
       }
-      return { events: [candidate], result: candidate }
+      return { events: [observation, candidate], result: candidate }
     })
     this.#rememberCandidateReference(candidate)
     return candidate
   }
 
-  listCandidates(input: MemoryCandidateList = {}): MemoryCandidate[] {
+  listCandidates(input: MemoryCandidateList): MemoryCandidate[] {
+    const context = this.#context(input.context)
     const state = this.storage.snapshot()
     if (state === undefined) return []
     const limit = Math.max(0, input.limit ?? 100)
     const candidates = state.candidates
-      .filter(candidate => input.includeResolved === true || candidate.status === 'pending')
+      .filter(candidate => this.#sameDomain(state, candidate, context)
+        && canDiscloseMemory(candidate.visibility, context)
+        && (input.includeResolved === true || candidate.status === 'pending'))
       .map((candidate, index) => ({ candidate, index }))
       .toSorted((left, right) => right.candidate.createdAt.localeCompare(left.candidate.createdAt) || right.index - left.index)
       .slice(0, limit)
@@ -297,36 +443,48 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
   }
 
   async approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord> {
+    const context = this.#context(input.context)
     const memory = await this.storage.transact(state => {
-      const used = state.sources.get(input.sourceMessageId)
+      const sourceKey = this.#sourceKey(context, 'governance-operation', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
       if (used !== undefined) {
         if (used.kind === 'approve' && used.candidateId === input.candidateId) return { events: [], result: existingMemory(state, used) }
         return conflict(input.sourceMessageId)
       }
       const candidate = state.candidateById.get(input.candidateId)
-      if (candidate === undefined) throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} does not exist`)
+      if (candidate === undefined || !this.#sameDomain(state, candidate, context)) {
+        throw new MemoryArchiveError('memory candidate is unavailable in the trusted Owner/scope', 'MEMORY_SCOPE_MISMATCH')
+      }
       if (candidate.status !== 'pending') throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} is already ${candidate.status}`)
       const timestamp = this.now().toISOString()
+      const observation = this.#observation(context, 'governance-operation', input.sourceMessageId, timestamp)
       const approved: MemoryRecord = {
-        schemaVersion: 1, id: this.createId(), createdAt: timestamp, content: candidate.content,
-        visibility: candidate.visibility, sourceMessageId: input.sourceMessageId,
+        schemaVersion: 2, id: this.createId(), ownerId: candidate.ownerId, scope: candidate.scope,
+        observationId: observation.id, memoryKind: candidate.memoryKind, createdAt: timestamp,
+        recordedAt: candidate.recordedAt,
+        ...(candidate.validFrom === undefined ? {} : { validFrom: candidate.validFrom }),
+        ...(candidate.validTo === undefined ? {} : { validTo: candidate.validTo }),
+        content: candidate.content, visibility: candidate.visibility, sourceMessageId: input.sourceMessageId,
         sourceCandidateId: candidate.id, status: 'confirmed',
       }
       const resolution: MemoryCandidateResolutionEvent = {
-        schemaVersion: 1, event: 'candidate-resolution', id: this.createId(), createdAt: timestamp,
+        schemaVersion: 2, event: 'candidate-resolution', id: this.createId(), createdAt: timestamp,
+        ownerId: context.ownerId, scope: context.scope, observationId: observation.id,
         candidateId: candidate.id, decision: 'approved', sourceMessageId: input.sourceMessageId,
         memoryId: approved.id,
       }
       candidate.status = 'approved'
-      return { events: [approved, resolution], result: approved }
+      return { events: [observation, approved, resolution], result: approved }
     })
     for (const candidate of this.#candidateReferences.get(input.candidateId) ?? []) candidate.status = 'approved'
     return memory
   }
 
   async rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate> {
+    const context = this.#context(input.context)
     const candidate = await this.storage.transact(state => {
-      const used = state.sources.get(input.sourceMessageId)
+      const sourceKey = this.#sourceKey(context, 'governance-operation', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
       if (used !== undefined) {
         if (used.kind === 'reject' && used.candidateId === input.candidateId) {
           const existing = state.candidateById.get(input.candidateId)
@@ -335,14 +493,19 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
         return conflict(input.sourceMessageId)
       }
       const pending = state.candidateById.get(input.candidateId)
-      if (pending === undefined) throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} does not exist`)
+      if (pending === undefined || !this.#sameDomain(state, pending, context)) {
+        throw new MemoryArchiveError('memory candidate is unavailable in the trusted Owner/scope', 'MEMORY_SCOPE_MISMATCH')
+      }
       if (pending.status !== 'pending') throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} is already ${pending.status}`)
+      const timestamp = this.now().toISOString()
+      const observation = this.#observation(context, 'governance-operation', input.sourceMessageId, timestamp)
       const resolution: MemoryCandidateResolutionEvent = {
-        schemaVersion: 1, event: 'candidate-resolution', id: this.createId(), createdAt: this.now().toISOString(),
+        schemaVersion: 2, event: 'candidate-resolution', id: this.createId(), createdAt: timestamp,
+        ownerId: context.ownerId, scope: context.scope, observationId: observation.id,
         candidateId: pending.id, decision: 'rejected', sourceMessageId: input.sourceMessageId,
       }
       pending.status = 'rejected'
-      return { events: [resolution], result: pending }
+      return { events: [observation, resolution], result: pending }
     })
     for (const reference of this.#candidateReferences.get(input.candidateId) ?? []) reference.status = 'rejected'
     this.#rememberCandidateReference(candidate)
@@ -387,7 +550,24 @@ const memoryValueSchema = {
   properties: {
     schemaVersion: { type: 'integer', required: true },
     id: { type: 'string', required: true },
+    ownerId: { type: 'string', required: true },
+    scope: {
+      type: 'object', required: true, additionalProperties: false,
+      properties: {
+        version: { type: 'integer', required: true },
+        kind: { type: 'string', required: true, enum: ['companion-reality', 'character-scene', 'campaign-branch'] },
+        sceneId: { type: 'string' }, campaignId: { type: 'string' }, branchId: { type: 'string' },
+      },
+    },
+    observationId: { type: 'string', required: true },
+    memoryKind: {
+      type: 'string', required: true,
+      enum: ['preference', 'biographical', 'boundary', 'commitment', 'relationship', 'episode', 'state', 'summary'],
+    },
     createdAt: { type: 'string', required: true },
+    recordedAt: { type: 'string', required: true },
+    validFrom: { type: 'string' },
+    validTo: { type: 'string' },
     content: { type: 'string', required: true },
     visibility: { type: 'string', required: true, enum: ['personal', 'confidential'] },
     sourceMessageId: { type: 'string', required: true },
@@ -404,7 +584,14 @@ const memoryCandidateValueSchema = {
     schemaVersion: { type: 'integer', required: true },
     event: { type: 'string', required: true, enum: ['candidate'] },
     id: { type: 'string', required: true },
+    ownerId: memoryValueSchema.properties.ownerId,
+    scope: memoryValueSchema.properties.scope,
+    observationId: memoryValueSchema.properties.observationId,
+    memoryKind: memoryValueSchema.properties.memoryKind,
     createdAt: { type: 'string', required: true },
+    recordedAt: { type: 'string', required: true },
+    validFrom: { type: 'string' },
+    validTo: { type: 'string' },
     content: { type: 'string', required: true },
     visibility: { type: 'string', required: true, enum: ['personal', 'confidential'] },
     sourceMessageId: { type: 'string', required: true },
@@ -426,7 +613,17 @@ function boundedListLimit(limit: number | undefined): number {
 
 interface MemoryOwnerEligibility {
   ownerMessages(agent: Agent, messages: readonly UserMessage[]): readonly UserMessage[]
-  evaluateCurrentTurn(agent: Agent): { readonly eligible: boolean }
+  evaluateMessage(agent: Agent, message: UserMessage): {
+    readonly eligible: boolean
+    readonly ownerId?: string
+    readonly authority?: string
+  }
+  evaluateCurrentTurn(agent: Agent): {
+    readonly eligible: boolean
+    readonly ownerId?: string
+    readonly authority?: string
+  }
+  trustedLocalOwner?(): { readonly ownerId: string; readonly authority: string }
 }
 
 function ownerEligibility(ctx: Context): MemoryOwnerEligibility {
@@ -452,7 +649,57 @@ function memoryOwnerGuard(ctx: Context, execution: Readonly<ToolExecution>): str
   return 'MistyMoon memory tools require an authenticated Owner request in the active top-level turn.'
 }
 
-function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): void {
+const COMPANION_SCOPE = { version: 1, kind: 'companion-reality' } as const
+
+function explicitConfidentialRecallIntent(text: string): boolean {
+  return /(?:回忆|想起|告诉|查看|列出|召回).*(?:保密|秘密|私密)|(?:保密|秘密|私密).*(?:回忆|想起|告诉|查看|列出|召回)/u.test(text)
+}
+
+function currentTurnText(agent: Agent): string {
+  const events = agent.session.events
+  let start = events.length
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === 'turn/start') {
+      start = index + 1
+      break
+    }
+  }
+  return events.slice(start).flatMap(event => event.type === 'user/message' ? [userText(event.data)] : []).join('\n')
+}
+
+function ownerContext(
+  decision: ReturnType<MemoryOwnerEligibility['evaluateCurrentTurn']>,
+  channelDisclosure: MemoryAccessContextV1['channelDisclosure'],
+  text: string,
+): MemoryAccessContextV1 {
+  if (!decision.eligible || decision.ownerId === undefined || decision.authority === undefined) {
+    throw new Error('memory access requires an authenticated Owner decision')
+  }
+  return {
+    version: 1,
+    ownerId: decision.ownerId,
+    authority: decision.authority,
+    scope: COMPANION_SCOPE,
+    channelDisclosure,
+    requestIntent: explicitConfidentialRecallIntent(text) ? 'explicit-confidential-recall' : 'ordinary',
+  }
+}
+
+function toolContext(
+  ctx: Context,
+  execution: Readonly<ToolExecution>,
+  channelDisclosure: MemoryAccessContextV1['channelDisclosure'],
+): MemoryAccessContextV1 {
+  const agent = execution.agent
+  if (agent === undefined) throw new Error('memory tool requires an active Owner agent')
+  return ownerContext(ownerEligibility(ctx).evaluateCurrentTurn(agent), channelDisclosure, currentTurnText(agent))
+}
+
+function registerMemoryTools(
+  ctx: Context,
+  archive: CompanionMemoryArchive,
+  channelDisclosure: MemoryAccessContextV1['channelDisclosure'],
+): void {
   ctx.tools.register(defineTool({
     name: 'memory_candidate_propose',
     description: 'Propose a durable companion memory inferred from the owner\'s messages. The proposal is not recalled '
@@ -463,6 +710,11 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
         type: 'string',
         enum: ['personal', 'confidential'],
         description: 'Use confidential for sensitive facts; defaults to personal.',
+      },
+      memoryKind: {
+        type: 'string',
+        enum: ['preference', 'biographical', 'boundary', 'commitment', 'relationship', 'episode', 'state', 'summary'],
+        description: 'Governed fact category; defaults to summary when the source does not establish a narrower kind.',
       },
     },
     output: {
@@ -476,8 +728,10 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
     async execute(args, exec) {
       return {
         candidate: await archive.propose({
+          context: toolContext(ctx, exec, channelDisclosure),
           content: args.content,
           visibility: args.visibility ?? 'personal',
+          memoryKind: args.memoryKind ?? 'summary',
           sourceMessageId: toolSourceMessageId(exec.callId, exec.agent?.id),
         }),
       }
@@ -507,9 +761,10 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
           : `Found ${result.candidates.length} companion-memory ${result.candidates.length === 1 ? 'proposal' : 'proposals'}.`,
       }],
     },
-    execute(args) {
+    execute(args, exec) {
       return Promise.resolve({
         candidates: archive.listCandidates({
+          context: toolContext(ctx, exec, channelDisclosure),
           includeResolved: args.includeResolved,
           limit: boundedListLimit(args.limit),
         }),
@@ -536,6 +791,7 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
     async execute(args, exec) {
       return {
         memory: await archive.approveCandidate({
+          context: toolContext(ctx, exec, channelDisclosure),
           candidateId: args.candidateId,
           sourceMessageId: toolSourceMessageId(exec.callId, exec.agent?.id),
         }),
@@ -562,6 +818,7 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
     async execute(args, exec) {
       return {
         candidate: await archive.rejectCandidate({
+          context: toolContext(ctx, exec, channelDisclosure),
           candidateId: args.candidateId,
           sourceMessageId: toolSourceMessageId(exec.callId, exec.agent?.id),
         }),
@@ -594,12 +851,12 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
           : `Found ${result.memories.length} companion ${result.memories.length === 1 ? 'memory' : 'memories'}.`,
       }],
     },
-    execute(args) {
+    execute(args, exec) {
       const limit = boundedListLimit(args.limit)
       const query = args.query?.trim()
       const memories = query === undefined || query === ''
-        ? archive.list({ includeInactive: args.includeInactive, limit })
-        : archive.recall({ query, limit })
+        ? archive.list({ context: toolContext(ctx, exec, channelDisclosure), includeInactive: args.includeInactive, limit })
+        : archive.recall({ context: toolContext(ctx, exec, channelDisclosure), query, limit })
       return Promise.resolve({ memories })
     },
     presentCall: args => ({ card: 'generic', title: 'Review companion memory', kind: 'search', rawInput: args }),
@@ -623,6 +880,7 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
     async execute(args, exec) {
       return {
         memory: await archive.forget({
+          context: toolContext(ctx, exec, channelDisclosure),
           memoryId: args.memoryId,
           sourceMessageId: toolSourceMessageId(exec.callId, exec.agent?.id),
         }),
@@ -650,6 +908,7 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
     async execute(args, exec) {
       return {
         memory: await archive.replace({
+          context: toolContext(ctx, exec, channelDisclosure),
           memoryId: args.memoryId,
           content: args.content,
           sourceMessageId: toolSourceMessageId(exec.callId, exec.agent?.id),
@@ -660,6 +919,27 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
   }))
 }
 
+function memoryGovernanceService(
+  eligibility: MemoryOwnerEligibility,
+  archive: CompanionMemoryArchive,
+): MemoryGovernanceService {
+  const identity = eligibility.trustedLocalOwner?.()
+  if (identity === undefined) throw new Error('memory governance requires a trusted local Owner adapter')
+  const context: MemoryAccessContextV1 = {
+    version: 1,
+    ownerId: identity.ownerId,
+    authority: identity.authority,
+    scope: COMPANION_SCOPE,
+    channelDisclosure: 'owner-confidential',
+    requestIntent: 'explicit-confidential-recall',
+  }
+  return {
+    listCandidates: input => archive.listCandidates({ context, ...input }),
+    approveCandidate: input => archive.approveCandidate({ context, ...input }),
+    rejectCandidate: input => archive.rejectCandidate({ context, ...input }),
+  }
+}
+
 /**
  * Observe explicit owner memories and append recalled context through DSH's logged pre-step path.
  * @param ctx - Plugin context with the agent event registry.
@@ -667,6 +947,7 @@ function registerMemoryTools(ctx: Context, archive: CompanionMemoryArchive): voi
  */
 export async function apply(ctx: Context, config: Config): Promise<void> {
   const recallLimit = config.recallLimit ?? DEFAULT_RECALL_LIMIT
+  const channelDisclosure = config.channelDisclosure ?? 'personal-only'
   if (!Number.isSafeInteger(recallLimit) || recallLimit < 1 || recallLimit > 20) {
     throw new TypeError(`mistymoon-memory: recallLimit must be an integer from 1 through 20, got ${String(recallLimit)}`)
   }
@@ -684,12 +965,16 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     maxTransactionBytes,
   })
   ctx.effect(() => ctx.provide('mistymoonMemory', archive), 'mistymoon-memory: shared archive')
+  ctx.effect(
+    () => ctx.provide('mistymoonMemoryGovernance', memoryGovernanceService(ownerEligibility(ctx), archive)),
+    'mistymoon-memory: loopback governance facade',
+  )
   ctx.effect(() => () => archive.dispose(), 'mistymoon-memory: bounded archive disposal')
   ctx.effect(
     () => ctx.tools.guard((execution) => memoryOwnerGuard(ctx, execution)),
     'mistymoon-memory: Owner Eligibility tool guard',
   )
-  registerMemoryTools(ctx, archive)
+  registerMemoryTools(ctx, archive, channelDisclosure)
   ctx.on('agent/pre-step', async ({ agent }, next): Promise<PreStepDecision> => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
@@ -698,14 +983,28 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       if (archive.inspection().state !== 'ready') return decision
       for (const message of ownerMessages) {
         const text = userText(message)
-        if (text !== '') await archive.observeExplicit({ sourceMessageId: message.id, text })
+        if (text !== '') {
+          await archive.observeExplicit({
+            context: ownerContext(ownerEligibility(ctx).evaluateMessage(agent, message), channelDisclosure, text),
+            sourceMessageId: message.id,
+            text,
+            memoryKind: 'summary',
+          })
+        }
       }
       const query = ownerMessages.map(userText).filter(Boolean).join('\n')
       if (query === '') return decision
+      const firstOwnerMessage = ownerMessages[0]
+      if (firstOwnerMessage === undefined) return decision
+      const context = ownerContext(
+        ownerEligibility(ctx).evaluateMessage(agent, firstOwnerMessage),
+        channelDisclosure,
+        query,
+      )
       const effectiveRecallLimit = config.settingsPath === undefined
         ? recallLimit
         : (await loadMemoryRuntimeSettings(config.settingsPath, recallLimit)).recallLimit
-      const memories = archive.recall({ query, limit: effectiveRecallLimit })
+      const memories = archive.recall({ context, query, limit: effectiveRecallLimit })
       if (memories.length === 0) return decision
       const text = recallSnapshot(memories)
       return {

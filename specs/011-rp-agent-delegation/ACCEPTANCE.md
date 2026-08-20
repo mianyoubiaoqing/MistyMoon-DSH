@@ -15,21 +15,23 @@
 
 ## 2. 预设与交付
 
-- 在中性临时 DSH Home provision 后，rc.7 discovery 能列出并挂载 `mistymoon-work-anchored-standard-v1`。
+- 在中性临时 DSH Home provision 后，rc.7 discovery 能列出并挂载 `mistymoon-work-anchored-standard-v2`。
 - `preset.yml` 只有中性展示数据，不含 Persona、Memory、凭据或本机路径。
 - 目标目录存在时拒绝覆盖；升级、回滚、删除各需显式确认。
 - 不修改 DSH 安装目录、Profile、其他 preset 或私有 discovery 状态。
 
 ## 3. RP Host 组合与工具隔离
 
-- 首次及 compaction/restart 后的 system prompt 含完整已发布 Persona 的唯一 `deployment:persona` section；DSH 保护段仍存在，`request/header.system` 可重建实际文本。
-- 工具 catalog 含 `web_search` / `web_fetch` 和已资格化的 `mistymoon_code_flash`，不含 Pro、shell、edit、write、patch、Git、代码执行或 browser side-effect 工具。
+- 首次及 compaction/restart 后的 system prompt 含完整已发布 Persona 的唯一 `deployment:persona` section，并以其作为模型可见运行时身份；安全、权限、沙箱、审批、协作模式、外部副作用与未知 policy section 保留，只有 `harness:identity` 文案被精确移除，`request/header.system` 可重建实际文本。
+- 工具 catalog 含 `web_search` / `web_fetch` / `read` / `grep` / `glob` 和已资格化的 `mistymoon_code_flash`，不含 Pro、shell、edit、write、patch、Git、代码执行或 browser side-effect 工具。`read` / `grep` / `glob` 只接受真实路径仍在当前 Session 工作区内的目标，绝对路径、父目录与符号链接越界均在执行前拒绝。
 - 设置页只列出 DSH 实时 registry 中能通过 `resolveCallConfig(... max)` 的 provider/model；DSH 删除或禁用的 route 不可保存。
 - 默认 direct Flash 不要求额外确认；任意非默认 exact pair 显示 experimental 警告，Owner 点击保存后只改变之后的 fresh child，已有或运行中的 child 不重绑。
 - 私有模型设置只包含版本、revision、provider/model 引用、固定 `max` 与 qualification，不包含 key、base URL、余额、账户或模型提供商配置。route 缺失、region、quota/rate 或 provider 错误 fail loud，且不创建 fallback child。
 - 直接尝试调用这些工具在 schema/执行 gate 失败，而不是依赖 prompt 自律。
 - RP Host 不含 `mistymoon_prepare_final_reply`、turn-voice 或 final-voice-refresh；通用 preset 仍保留三者和原有序列测试。
 - DSH safety、permissions、Plan、AGENTS 和 skill governance sections 保持存在。
+- DSH rc.7 未标记 section 是否为可过滤工具帮助，因此未知 `tool:*` / `tools:*` section 默认保留；prompt section 名称不充当 capability gate。
+- Composition 不扫描任意 Symbol 或宿主私有 scope shape；公开 scoped restriction 安装失败时 preset mount fail closed。后注册/HMR 工具不会进入下一次组装的封闭 catalog，也会被 monotonic execution guard 拒绝。
 
 ## 4. Work Agent 隔离
 
@@ -64,7 +66,7 @@
 
 | 请求 | provider | model | reasoningEffort |
 | --- | --- | --- | --- |
-| RP Host | `deepseek-official` | `deepseek-v4-flash` | `high` |
+| RP Host | DSH Web UI 选定的 provider/model（不固定） | DSH Web UI 选定的 provider/model（不固定） | 由所选模型决定 |
 | Flash child | `deepseek-official` | `deepseek-v4-flash` | `max` |
 专用 Pro child 工具不注册；未来作为正式产品 route 新增时必须独立通过本表同等级验收。Owner 通过通用 selector 手动选择 DSH Pro 只构成 experimental exact pair，不构成资格通过。
 

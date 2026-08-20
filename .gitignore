@@ -3,6 +3,8 @@ lib/
 dist/
 .artifacts/
 .idea/
+.cursor/
+.playwright-cli/
 *.tsbuildinfo
 
 .env

@@ -27,7 +27,7 @@ import {
   saveMemoryRuntimeSettings,
 } from '@mistymoon/dsh-memory/runtime-settings'
 import type {} from '@mistymoon/dsh-memory'
-import type { CompanionMemoryArchive, MemoryCandidate, MemoryRecord } from '@mistymoon/dsh-memory/contracts'
+import type { MemoryCandidate, MemoryGovernanceService, MemoryRecord } from '@mistymoon/dsh-memory/contracts'
 import type {} from '@mistymoon/dsh-work-agent-dsh'
 import type {
   CharacterCardPersonaMapping,
@@ -44,7 +44,7 @@ export const name = 'mistymoon-settings-ui'
 /** Host transport required by the local settings page. */
 export const inject = [
   'connection',
-  'mistymoonMemory',
+  'mistymoonMemoryGovernance',
   'mistymoonPersonaProjection',
   'mistymoonWorkDelegation',
 ]
@@ -165,41 +165,41 @@ export async function applyMistyMoonCharacterCard(home: string, value: unknown):
 
 /**
  * Read the pending candidate queue from the process-wide memory archive.
- * @param archive - Archive shared with recall and DSH memory tools.
+ * @param governance - Memory-owned loopback governance facade.
  * @returns Pending candidates ordered newest first.
  */
-export function readMistyMoonCandidates(archive: CompanionMemoryArchive): MemoryCandidate[] {
-  return archive.listCandidates()
+export function readMistyMoonCandidates(governance: MemoryGovernanceService): MemoryCandidate[] {
+  return governance.listCandidates()
 }
 
 /**
  * Approve one candidate from the local owner UI.
- * @param archive - Archive shared with recall and DSH memory tools.
+ * @param governance - Memory-owned loopback governance facade.
  * @param candidateId - Candidate selected by the owner.
  * @param requestId - Browser-generated idempotency id.
  * @returns Newly confirmed memory.
  */
 export async function approveMistyMoonCandidate(
-  archive: CompanionMemoryArchive,
+  governance: MemoryGovernanceService,
   candidateId: string,
   requestId: string,
 ): Promise<MemoryRecord> {
-  return archive.approveCandidate({ candidateId, sourceMessageId: `settings-ui:${requestId}` })
+  return governance.approveCandidate({ candidateId, sourceMessageId: `settings-ui:${requestId}` })
 }
 
 /**
  * Reject one candidate from the local owner UI.
- * @param archive - Archive shared with recall and DSH memory tools.
+ * @param governance - Memory-owned loopback governance facade.
  * @param candidateId - Candidate selected by the owner.
  * @param requestId - Browser-generated idempotency id.
  * @returns Rejected candidate retained in private audit history.
  */
 export async function rejectMistyMoonCandidate(
-  archive: CompanionMemoryArchive,
+  governance: MemoryGovernanceService,
   candidateId: string,
   requestId: string,
 ): Promise<MemoryCandidate> {
-  return archive.rejectCandidate({ candidateId, sourceMessageId: `settings-ui:${requestId}` })
+  return governance.rejectCandidate({ candidateId, sourceMessageId: `settings-ui:${requestId}` })
 }
 
 /** Read the live DSH model catalog and the credential-free Work selection. */
@@ -292,7 +292,7 @@ export function apply(ctx: Context, config: Config): void {
       }
       if (endpoint === 'candidate-list') {
         if (!exactObject(payload, [])) return badRequest('MistyMoon candidate list expects an empty object.')
-        return { ok: true, value: readMistyMoonCandidates(ctx.mistymoonMemory) }
+        return { ok: true, value: readMistyMoonCandidates(ctx.mistymoonMemoryGovernance) }
       }
       if (endpoint === 'candidate-approve' || endpoint === 'candidate-reject') {
         const decision = candidateDecision(payload)
@@ -301,8 +301,8 @@ export function apply(ctx: Context, config: Config): void {
         }
         try {
           const value = endpoint === 'candidate-approve'
-            ? await approveMistyMoonCandidate(ctx.mistymoonMemory, decision.candidateId, decision.requestId)
-            : await rejectMistyMoonCandidate(ctx.mistymoonMemory, decision.candidateId, decision.requestId)
+            ? await approveMistyMoonCandidate(ctx.mistymoonMemoryGovernance, decision.candidateId, decision.requestId)
+            : await rejectMistyMoonCandidate(ctx.mistymoonMemoryGovernance, decision.candidateId, decision.requestId)
           return { ok: true, value }
         } catch (error) {
           return badRequest(error instanceof Error ? error.message : 'MistyMoon candidate decision failed.')

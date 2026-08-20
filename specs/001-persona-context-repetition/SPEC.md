@@ -2,7 +2,7 @@
 
 ## 2026-08-18 适用范围修订
 
-本规范继续完整约束**除 `mistymoon-rp-host-v1` 外的通用 Agent preset**。RP 专用 preset 改用完整已发布 Persona 的受保护 `deployment:persona` system projection，并由 DSH `request/header` 记录实际模型所见 system 文本；它不生成 turn-voice/final-voice-refresh，也不暴露 `mistymoon_prepare_final_reply`。该例外按精确 preset identity 和顶层 Owner Eligibility 判定，不能由 prompt、自称或普通配置字符串启用。
+本规范继续完整约束**除当前 `mistymoon-rp-host-v2` 外的通用 Agent preset**。RP 专用 preset 改用完整已发布 Persona 的受保护 `deployment:persona` system projection，并由 DSH `request/header` 记录实际模型所见 system 文本；它不生成 turn-voice/final-voice-refresh，也不暴露 `mistymoon_prepare_final_reply`。该例外按精确 preset identity 和顶层 Owner Eligibility 判定，不能由 prompt、自称或普通配置字符串启用。
 
 这不是全局替换：Coding、Standard、Minimal 及其他既有 preset 继续使用本文的互斥双阶段 delivery 与 final-reply 工具。Foundation 必须在同一 public seam 上测试两条策略，保证 RP Host 的新行为不会让通用 preset 回退。
 

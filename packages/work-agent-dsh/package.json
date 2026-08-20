@@ -1,6 +1,6 @@
 {
   "name": "@mistymoon/dsh-work-agent-dsh",
-  "version": "0.0.1-rc.5",
+  "version": "0.0.1-rc.6",
   "description": "DSH lifecycle adapter for governed MistyMoon Work Agent activations",
   "private": true,
   "type": "module",

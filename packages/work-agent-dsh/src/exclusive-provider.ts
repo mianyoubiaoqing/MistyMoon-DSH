@@ -3,6 +3,7 @@ import type {
   SubagentProvider,
   SubagentRun,
 } from '@deepseek-ai/dsh-subagent'
+import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 
 /** A parent already owns one foreground Work activation. */
 export class WorkActivationBusyError extends Error {
@@ -77,7 +78,7 @@ export function createExclusiveWorkPresetProvider(
     }),
     async start(request: ResolvedSubagentStartRequest): Promise<SubagentRun> {
       if ((request.parent.session.header.delegationDepth ?? 0) !== 0
-        || request.parent.session.header.agentPreset !== options.expectedParentPreset) {
+        || resolveSessionPreset(request.parent.session) !== options.expectedParentPreset) {
         throw new WorkActivationRoleError()
       }
       const leaseKey = options.leaseKey?.(request) ?? String(request.parent.id)

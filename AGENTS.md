@@ -41,8 +41,10 @@
 
 ## 人格与记忆规则
 
-- DSH 的 Harness identity、安全、权限、协作模式、工具规则和 Owner 当前请求始终优先且不得由 RP 覆盖。人格投影按 Agent preset 分流：只有受认证的 `mistymoon-rp-host-v1` 顶层 Agent 使用完整已发布 Persona 的 `deployment:persona` system section，并由 DSH `request/header` 持久化实际模型所见文本；该 preset 不注册或暴露 `mistymoon_prepare_final_reply`，不得再叠加 `mistymoon:turn-voice` 或 `mistymoon:final-voice-refresh`。其他 preset 继续使用互斥双阶段输出画像和既有 final-reply 工具，不因 RP Host 的专属策略改变行为。不得按 assistant/tool step 生成新 capsule、continuation 或 anchor，不得做事后改写或二次生成。
-- RP Host 可以使用只读 Web 能力（`web_search`、`web_fetch`）维持类似真人的检索和阅读行为；登录、表单提交、上传、购买、公开发布或其他外部副作用能力不得由该 preset 隐式获得，若未来接入必须经过代码级 capability gate 与 Owner 确认。Persona 不能授权工具、改变权限、绕过确认、安全或协作模式，也不能改写代码、命令、规则引文、数值、测试结果、诊断或技术决策。
+- DSH 的安全、权限、审批、协作模式、工具治理和 Owner 当前请求始终优先且不得由 RP 覆盖。对启用 RP 的受认证 `mistymoon-rp-host-v2` 顶层 Agent，完整已发布 Persona 的 `deployment:persona` 是唯一模型可见运行时身份，精确隐藏 `harness:identity` 文案；这是身份呈现策略，不改变任何强制权限。实际 system 文本由 DSH `request/header` 持久化；模型路由沿用当前会话在 DSH Web UI 中选择的 provider/model，preset 不固定或覆盖。该 preset 不注册或暴露 `mistymoon_prepare_final_reply`，不得再叠加 `mistymoon:turn-voice` 或 `mistymoon:final-voice-refresh`。其他 preset 继续使用互斥双阶段输出画像和既有 final-reply 工具。不得按 assistant/tool step 生成新 capsule、continuation 或 anchor，不得做事后改写或二次生成。
+- RP Host 可以使用只读 Web（`web_search`、`web_fetch`）以及限定在当前 Session 工作区真实路径内的 `read`、`grep`、`glob`；绝对路径、父目录跳出和符号链接不得越出该工作区。登录、表单提交、上传、购买、公开发布或其他外部副作用能力不得由该 preset 隐式获得，若未来接入必须经过代码级 capability gate 与 Owner 确认。Persona 不能授权工具、改变权限、绕过确认、安全或协作模式，也不能改写代码、命令、规则引文、数值、测试结果、诊断或技术决策。
+- RP Host 的 preset/scope 边界只使用 DSH 公开 current-scope/preset/tool-restriction API 或 preset 显式注入；当前兼容实现固定 DSH rc.7，识别失败时 fail closed，不注入完整 Persona、不扩大工具面。禁止遍历 Context 原型或任意 `Symbol` 猜测宿主私有对象。
+- 实际 capability gate 是 RP Host 工具权威，prompt section allowlist 不能代替它。安全、权限、审批、协作模式和外部副作用规则永远保留；只有 DSH 明确标记为可过滤的工具帮助 section 才能移除，未知 section 默认保留，不按 `tool:*` / `tools:*` 前缀猜测。工具后注册或 HMR 必须重新应用完整封闭 catalog 与执行 guard，或者要求重启 activation，不得静默扩大能力。
 - Work child 始终使用中性工程 Persona、fresh one-shot Session 和固定工具白名单；不得继承 RP Persona、父 transcript、关系记忆、Recall Snapshot 或 final-reply 工具，不得再次委派。共享工作区写入默认串行，同一 RP Host 同时最多一个前台 Work activation；这些约束必须由 provider、tool restriction 和 lifecycle 状态强制，不能只依靠提示词。
 - RP 展示等级与 DSH 模式正交：`off` 完全关闭，`companion` 只提供简洁身份与语气，`immersive` 提供完整人格。切换 RP 不得复制或改写 Agent 预设。
 - 人格编辑先形成草稿；预览通过后才发布为活动版本。导入内容永远不能自动覆盖活动人格。
@@ -87,6 +89,9 @@ pnpm check
 ## Git 与发布
 
 - 分支默认使用 `codex/` 前缀。未经用户明确授权，不提交、不推送、不创建 Release。
+- npm registry 不再是面向用户的分发渠道，根包必须保持 `private: true`。Installer 与 tgz 只作为 Desktop 构建、开发预览和本机内部安装/回滚 seam，不得重新写成要求用户登录 npm 或执行 `pnpm dlx` 的安装流程。
+- 计划在 P0、P1（桌面跑团模式除外）完成并通过发行验收后发布预装本套件的 DSH Desktop。封装不得修改 DSH 源码或 Profile 所有权，私有 Persona、Memory、凭据、会话和日志必须位于应用包之外的独立 DSH Home。
+- Desktop 发布前必须完成许可证/第三方资产审计、可复现构建、代码签名、全新 Windows 安装、升级、回滚、卸载和用户数据保留测试；这些发布动作仍需用户明确授权。
 - 不使用 `git reset --hard`、`git clean` 或覆盖用户改动的命令。
 - 版本、README、锁文件、构建产物清单和发布审计必须一致。
 - 外部项目只能依据其许可证和固定版本参考。AGPL 项目不得复制实现到本 MIT 套件；许可证不清晰的二进制不得随包再分发。

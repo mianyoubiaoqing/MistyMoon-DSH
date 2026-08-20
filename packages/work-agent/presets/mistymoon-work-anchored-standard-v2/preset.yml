@@ -1,0 +1,3 @@
+name: MistyMoon Anchored Standard Work (Phase 0)
+description: Neutral Anchored Standard compatibility preset for governed Work Agent validation.
+# Versioned v2 provision target. Installer rollback retains the independent v1 directory.

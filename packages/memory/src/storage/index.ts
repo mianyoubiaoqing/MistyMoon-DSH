@@ -3,28 +3,45 @@ import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { lock as acquireProperLock } from 'proper-lockfile'
 import type { MemoryCandidate, MemoryRecord } from '../contracts.js'
+import {
+  memoryScopeEquals,
+  memorySourceKey,
+  parseMemoryKind,
+  parseMemoryObservationSourceKind,
+  parseMemoryScopeV1,
+  validateMemoryValidity,
+  type MemoryObservationV1,
+  type MemoryObservationSourceKind,
+  type MemoryScopeV1,
+} from '../domain.js'
 
 export interface MemoryForgottenEvent {
-  schemaVersion: 1
+  schemaVersion: 2
   event: 'forgotten'
   id: string
   createdAt: string
+  ownerId: string
+  scope: MemoryScopeV1
+  observationId: string
   memoryId: string
   sourceMessageId: string
 }
 
 export interface MemoryCandidateResolutionEvent {
-  schemaVersion: 1
+  schemaVersion: 2
   event: 'candidate-resolution'
   id: string
   createdAt: string
+  ownerId: string
+  scope: MemoryScopeV1
+  observationId: string
   candidateId: string
   decision: 'approved' | 'rejected'
   sourceMessageId: string
   memoryId?: string
 }
 
-export type MemoryDomainEvent = MemoryRecord | MemoryCandidate | MemoryForgottenEvent | MemoryCandidateResolutionEvent
+export type MemoryDomainEvent = MemoryObservationV1 | MemoryRecord | MemoryCandidate | MemoryForgottenEvent | MemoryCandidateResolutionEvent
 
 export type ArchiveIssueCode =
   | 'trailing-partial-transaction'
@@ -41,6 +58,7 @@ export type ArchiveIssueCode =
   | 'archive-too-large'
   | 'transaction-too-large'
   | 'checkpoint-mismatch'
+  | 'scope-migration-required'
 
 export interface ArchiveIssue {
   code: ArchiveIssueCode
@@ -49,7 +67,7 @@ export interface ArchiveIssue {
 }
 
 export interface ArchiveInspection {
-  state: 'ready' | 'migration-required' | 'quarantined'
+  state: 'ready' | 'migration-required' | 'scope-migration-required' | 'quarantined'
   format: 'v1' | 'v2' | 'unknown'
   sizeBytes: number
   transactionCount: number
@@ -68,6 +86,10 @@ export interface SourceUse {
   content?: string
   visibility?: 'personal' | 'confidential'
   createdAt?: string
+  memoryKind?: MemoryRecord['memoryKind']
+  recordedAt?: string
+  validFrom?: string
+  validTo?: string
 }
 
 export interface FoldedMemoryState {
@@ -75,6 +97,8 @@ export interface FoldedMemoryState {
   candidates: MemoryCandidate[]
   byId: Map<string, MemoryRecord>
   candidateById: Map<string, MemoryCandidate>
+  observations: Map<string, MemoryObservationV1>
+  eventIds: Set<string>
   sources: Map<string, SourceUse>
 }
 
@@ -89,13 +113,13 @@ interface ArchiveHeaderV2 {
   }
 }
 
-interface ArchiveTransactionV2 {
+interface ArchiveTransactionV2<TEvent = MemoryDomainEvent> {
   kind: 'transaction'
   schemaVersion: 2
   id: string
   committedAt: string
   previousDigest: string
-  events: MemoryDomainEvent[]
+  events: TEvent[]
   digest: string
 }
 
@@ -182,11 +206,13 @@ export class MemoryArchiveError extends Error {
     message: string,
     readonly code:
       | 'MEMORY_ARCHIVE_MIGRATION_REQUIRED'
+      | 'MEMORY_ARCHIVE_SCOPE_MIGRATION_REQUIRED'
       | 'MEMORY_ARCHIVE_QUARANTINED'
       | 'MEMORY_LEASE_TIMEOUT'
       | 'MEMORY_LEASE_COMPROMISED'
       | 'MEMORY_LEASE_RELEASE_FAILED'
       | 'MEMORY_SOURCE_CONFLICT'
+      | 'MEMORY_SCOPE_MISMATCH'
       | 'MEMORY_ARCHIVE_DISPOSED'
       | 'MEMORY_DISPOSE_TIMEOUT',
     options?: ErrorOptions,
@@ -286,7 +312,69 @@ function requiredString(value: unknown): string {
   return value
 }
 
-function parseDomainEvent(value: unknown, line: number, offset: number): MemoryDomainEvent {
+interface LegacyMemoryRecordV1 {
+  schemaVersion: 1
+  id: string
+  createdAt: string
+  content: string
+  visibility: 'personal' | 'confidential'
+  sourceMessageId: string
+  sourceCandidateId?: string
+  supersedesMemoryId?: string
+  status: 'confirmed'
+}
+
+interface LegacyMemoryCandidateV1 {
+  schemaVersion: 1
+  event: 'candidate'
+  id: string
+  createdAt: string
+  content: string
+  visibility: 'personal' | 'confidential'
+  sourceMessageId: string
+  status: 'pending'
+}
+
+interface LegacyMemoryForgottenEventV1 {
+  schemaVersion: 1
+  event: 'forgotten'
+  id: string
+  createdAt: string
+  memoryId: string
+  sourceMessageId: string
+}
+
+interface LegacyMemoryCandidateResolutionEventV1 {
+  schemaVersion: 1
+  event: 'candidate-resolution'
+  id: string
+  createdAt: string
+  candidateId: string
+  decision: 'approved' | 'rejected'
+  sourceMessageId: string
+  memoryId?: string
+}
+
+type LegacyMemoryDomainEventV1 = LegacyMemoryRecordV1 | LegacyMemoryCandidateV1
+  | LegacyMemoryForgottenEventV1 | LegacyMemoryCandidateResolutionEventV1
+
+function exactDomainKeys(entry: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): void {
+  const allowed = new Set([...required, ...optional])
+  if (required.some(key => !(key in entry)) || Object.keys(entry).some(key => !allowed.has(key))) {
+    throw new Error('domain event contains missing or unknown fields')
+  }
+}
+
+function timestamp(value: unknown): string {
+  return validateMemoryValidity({ recordedAt: requiredString(value) }).recordedAt
+}
+
+function visibility(value: unknown): 'personal' | 'confidential' {
+  if (value !== 'personal' && value !== 'confidential') throw new Error('unsupported visibility')
+  return value
+}
+
+function parseLegacyDomainEvent(value: unknown, line: number, offset: number): LegacyMemoryDomainEventV1 {
   let entry: Record<string, unknown>
   try {
     entry = record(value)
@@ -354,12 +442,124 @@ function parseDomainEvent(value: unknown, line: number, offset: number): MemoryD
   }
 }
 
+function parseDomainEvent(value: unknown, line: number, offset: number): MemoryDomainEvent {
+  let entry: Record<string, unknown>
+  try {
+    entry = record(value)
+  } catch {
+    throw new FormatIssue({ code: 'invalid-transaction', line, offset })
+  }
+  try {
+    if (entry.schemaVersion === 1 && entry.event === 'observation') {
+      exactDomainKeys(entry, [
+        'schemaVersion', 'event', 'id', 'ownerId', 'authority', 'scope', 'source', 'observedAt',
+      ])
+      const source = record(entry.source)
+      exactDomainKeys(source, ['kind', 'id'])
+      return {
+        schemaVersion: 1,
+        event: 'observation',
+        id: requiredString(entry.id),
+        ownerId: requiredString(entry.ownerId),
+        authority: requiredString(entry.authority),
+        scope: parseMemoryScopeV1(entry.scope),
+        source: {
+          kind: parseMemoryObservationSourceKind(source.kind),
+          id: requiredString(source.id),
+        },
+        observedAt: timestamp(entry.observedAt),
+      }
+    }
+    if (entry.schemaVersion !== 2) throw new FormatIssue({ code: 'unknown-required-event', line, offset })
+    if (entry.event === 'forgotten') {
+      exactDomainKeys(entry, [
+        'schemaVersion', 'event', 'id', 'createdAt', 'ownerId', 'scope', 'observationId', 'memoryId', 'sourceMessageId',
+      ])
+      return {
+        schemaVersion: 2,
+        event: 'forgotten',
+        id: requiredString(entry.id),
+        createdAt: timestamp(entry.createdAt),
+        ownerId: requiredString(entry.ownerId),
+        scope: parseMemoryScopeV1(entry.scope),
+        observationId: requiredString(entry.observationId),
+        memoryId: requiredString(entry.memoryId),
+        sourceMessageId: requiredString(entry.sourceMessageId),
+      }
+    }
+    if (entry.event === 'candidate-resolution') {
+      exactDomainKeys(entry, [
+        'schemaVersion', 'event', 'id', 'createdAt', 'ownerId', 'scope', 'observationId', 'candidateId',
+        'decision', 'sourceMessageId',
+      ], ['memoryId'])
+      if (entry.decision !== 'approved' && entry.decision !== 'rejected') throw new Error('unsupported decision')
+      return {
+        schemaVersion: 2,
+        event: 'candidate-resolution',
+        id: requiredString(entry.id),
+        createdAt: timestamp(entry.createdAt),
+        ownerId: requiredString(entry.ownerId),
+        scope: parseMemoryScopeV1(entry.scope),
+        observationId: requiredString(entry.observationId),
+        candidateId: requiredString(entry.candidateId),
+        decision: entry.decision,
+        sourceMessageId: requiredString(entry.sourceMessageId),
+        ...(entry.memoryId === undefined ? {} : { memoryId: requiredString(entry.memoryId) }),
+      }
+    }
+    if (entry.event !== undefined && entry.event !== 'candidate') {
+      throw new FormatIssue({ code: 'unknown-required-event', line, offset })
+    }
+    const commonRequired = [
+      'schemaVersion', 'id', 'createdAt', 'ownerId', 'scope', 'observationId', 'memoryKind',
+      'recordedAt', 'content', 'visibility', 'sourceMessageId', 'status',
+    ] as const
+    const validity = validateMemoryValidity({
+      recordedAt: requiredString(entry.recordedAt),
+      ...(entry.validFrom === undefined ? {} : { validFrom: requiredString(entry.validFrom) }),
+      ...(entry.validTo === undefined ? {} : { validTo: requiredString(entry.validTo) }),
+    })
+    const common = {
+      schemaVersion: 2 as const,
+      id: requiredString(entry.id),
+      createdAt: timestamp(entry.createdAt),
+      ownerId: requiredString(entry.ownerId),
+      scope: parseMemoryScopeV1(entry.scope),
+      observationId: requiredString(entry.observationId),
+      memoryKind: parseMemoryKind(entry.memoryKind),
+      ...validity,
+      content: requiredString(entry.content),
+      visibility: visibility(entry.visibility),
+      sourceMessageId: requiredString(entry.sourceMessageId),
+    }
+    if (entry.event === 'candidate') {
+      exactDomainKeys(entry, [...commonRequired, 'event'], ['validFrom', 'validTo'])
+      if (entry.status !== 'pending') throw new Error('candidate must start pending')
+      return { ...common, event: 'candidate', status: 'pending' }
+    }
+    if (entry.event !== undefined) throw new FormatIssue({ code: 'unknown-required-event', line, offset })
+    exactDomainKeys(entry, commonRequired, ['validFrom', 'validTo', 'sourceCandidateId', 'supersedesMemoryId'])
+    if (entry.status !== 'confirmed') throw new Error('memory must start confirmed')
+    return {
+      ...common,
+      ...(entry.sourceCandidateId === undefined ? {} : { sourceCandidateId: requiredString(entry.sourceCandidateId) }),
+      ...(entry.supersedesMemoryId === undefined ? {} : { supersedesMemoryId: requiredString(entry.supersedesMemoryId) }),
+      status: 'confirmed',
+    }
+  } catch (error) {
+    if (error instanceof FormatIssue) throw error
+    throw new FormatIssue({ code: 'invalid-transaction', line, offset })
+  }
+}
+
 function emptyState(): FoldedMemoryState {
   return {
     records: [],
     candidates: [],
     byId: new Map(),
     candidateById: new Map(),
+    observations: new Map(),
+    eventIds: new Set(),
     sources: new Map(),
   }
 }
@@ -380,6 +580,12 @@ export function cloneFoldedState(source: FoldedMemoryState): FoldedMemoryState {
     candidates,
     byId: new Map(records.map(memory => [memory.id, memory])),
     candidateById: new Map(candidates.map(candidate => [candidate.id, candidate])),
+    observations: new Map([...source.observations].map(([id, observation]) => [id, {
+      ...observation,
+      scope: { ...observation.scope },
+      source: { ...observation.source },
+    }])),
+    eventIds: new Set(source.eventIds),
     sources: new Map([...source.sources].map(([id, use]) => [id, { ...use }])),
   }
 }
@@ -389,24 +595,39 @@ function issue(code: ArchiveIssueCode, line: number, offset: number): never {
 }
 
 function reserveId(state: FoldedMemoryState, id: string, line: number, offset: number): void {
-  if (state.byId.has(id) || state.candidateById.has(id)) issue('duplicate-id', line, offset)
+  if (state.eventIds.has(id)) issue('duplicate-id', line, offset)
+  state.eventIds.add(id)
 }
 
 function reserveSource(
   state: FoldedMemoryState,
-  sourceMessageId: string,
+  sourceKey: string,
   use: SourceUse,
   line: number,
   offset: number,
   allowApprovalPair = false,
 ): void {
-  const existing = state.sources.get(sourceMessageId)
+  const existing = state.sources.get(sourceKey)
   if (existing === undefined) {
-    state.sources.set(sourceMessageId, use)
+    state.sources.set(sourceKey, use)
     return
   }
   if (allowApprovalPair && existing.transactionId === use.transactionId && existing.kind === 'approve') return
   issue('duplicate-source', line, offset)
+}
+
+function eventObservation(
+  state: FoldedMemoryState,
+  event: Exclude<MemoryDomainEvent, MemoryObservationV1>,
+  line: number,
+  offset: number,
+): { observation: MemoryObservationV1; sourceKey: string } {
+  const observation = state.observations.get(event.observationId)
+  if (observation === undefined || observation.ownerId !== event.ownerId
+    || !memoryScopeEquals(observation.scope, event.scope)) {
+    issue('invalid-state-transition', line, offset)
+  }
+  return { observation, sourceKey: memorySourceKey(observation) }
 }
 
 function foldEvent(
@@ -417,37 +638,50 @@ function foldEvent(
   offset: number,
 ): void {
   reserveId(state, event.id, line, offset)
+  if (event.schemaVersion === 1 && event.event === 'observation') {
+    const sourceKey = memorySourceKey(event)
+    if (state.sources.has(sourceKey)) issue('duplicate-source', line, offset)
+    state.observations.set(event.id, event)
+    return
+  }
   if ('event' in event && event.event === 'forgotten') {
+    const { sourceKey } = eventObservation(state, event, line, offset)
     const target = state.byId.get(event.memoryId)
-    if (target === undefined || target.status !== 'confirmed') issue('invalid-state-transition', line, offset)
-    reserveSource(state, event.sourceMessageId, {
+    if (target === undefined || target.status !== 'confirmed' || target.ownerId !== event.ownerId
+      || !memoryScopeEquals(target.scope, event.scope)) issue('invalid-state-transition', line, offset)
+    reserveSource(state, sourceKey, {
       kind: 'forget', transactionId, memoryId: target.id, targetMemoryId: target.id,
     }, line, offset)
     target.status = 'forgotten'
     return
   }
   if ('event' in event && event.event === 'candidate') {
-    reserveSource(state, event.sourceMessageId, {
-      kind: 'candidate', transactionId, candidateId: event.id, content: event.content, visibility: event.visibility,
+    const { sourceKey } = eventObservation(state, event, line, offset)
+    reserveSource(state, sourceKey, {
+      kind: 'candidate', transactionId, candidateId: event.id, content: event.content,
+      visibility: event.visibility, memoryKind: event.memoryKind, recordedAt: event.recordedAt,
+      validFrom: event.validFrom, validTo: event.validTo,
     }, line, offset)
     state.candidates.push(event)
     state.candidateById.set(event.id, event)
     return
   }
   if ('event' in event && event.event === 'candidate-resolution') {
+    const { sourceKey } = eventObservation(state, event, line, offset)
     const candidate = state.candidateById.get(event.candidateId)
-    if (candidate === undefined || candidate.status !== 'pending') issue('invalid-state-transition', line, offset)
+    if (candidate === undefined || candidate.status !== 'pending' || candidate.ownerId !== event.ownerId
+      || !memoryScopeEquals(candidate.scope, event.scope)) issue('invalid-state-transition', line, offset)
     if (event.decision === 'approved') {
       const memory = event.memoryId === undefined ? undefined : state.byId.get(event.memoryId)
-      const source = state.sources.get(event.sourceMessageId)
+      const source = state.sources.get(sourceKey)
       if (memory === undefined || memory.sourceCandidateId !== candidate.id || source?.kind !== 'approve'
         || source.transactionId !== transactionId || source.memoryId !== memory.id) {
         issue('invalid-state-transition', line, offset)
       }
-      reserveSource(state, event.sourceMessageId, source, line, offset, true)
+      reserveSource(state, sourceKey, source, line, offset, true)
       candidate.status = 'approved'
     } else {
-      reserveSource(state, event.sourceMessageId, {
+      reserveSource(state, sourceKey, {
         kind: 'reject', transactionId, candidateId: candidate.id,
       }, line, offset)
       candidate.status = 'rejected'
@@ -455,32 +689,38 @@ function foldEvent(
     return
   }
   const memory = event
+  const { sourceKey } = eventObservation(state, memory, line, offset)
   if (memory.sourceCandidateId !== undefined) {
     const candidate = state.candidateById.get(memory.sourceCandidateId)
-    if (candidate === undefined || candidate.status !== 'pending') issue('invalid-state-transition', line, offset)
-    reserveSource(state, memory.sourceMessageId, {
+    if (candidate === undefined || candidate.status !== 'pending' || candidate.ownerId !== memory.ownerId
+      || !memoryScopeEquals(candidate.scope, memory.scope)) issue('invalid-state-transition', line, offset)
+    reserveSource(state, sourceKey, {
       kind: 'approve', transactionId, memoryId: memory.id, candidateId: candidate.id,
-      content: memory.content, visibility: memory.visibility,
+      content: memory.content, visibility: memory.visibility, memoryKind: memory.memoryKind,
+      recordedAt: memory.recordedAt, validFrom: memory.validFrom, validTo: memory.validTo,
     }, line, offset)
   } else if (memory.supersedesMemoryId !== undefined) {
     const target = state.byId.get(memory.supersedesMemoryId)
-    if (target === undefined || target.status !== 'confirmed') issue('invalid-state-transition', line, offset)
-    reserveSource(state, memory.sourceMessageId, {
+    if (target === undefined || target.status !== 'confirmed' || target.ownerId !== memory.ownerId
+      || !memoryScopeEquals(target.scope, memory.scope)) issue('invalid-state-transition', line, offset)
+    reserveSource(state, sourceKey, {
       kind: 'replace', transactionId, memoryId: memory.id, targetMemoryId: target.id,
-      content: memory.content, visibility: memory.visibility,
+      content: memory.content, visibility: memory.visibility, memoryKind: memory.memoryKind,
+      recordedAt: memory.recordedAt, validFrom: memory.validFrom, validTo: memory.validTo,
     }, line, offset)
     target.status = 'superseded'
   } else {
-    reserveSource(state, memory.sourceMessageId, {
+    reserveSource(state, sourceKey, {
       kind: 'memory', transactionId, memoryId: memory.id, content: memory.content,
-      visibility: memory.visibility, createdAt: memory.createdAt,
+      visibility: memory.visibility, createdAt: memory.createdAt, memoryKind: memory.memoryKind,
+      recordedAt: memory.recordedAt, validFrom: memory.validFrom, validTo: memory.validTo,
     }, line, offset)
   }
   state.records.push(memory)
   state.byId.set(memory.id, memory)
 }
 
-function foldTransactions(transactions: readonly ArchiveTransactionV2[]): FoldedMemoryState {
+function foldTransactions(transactions: readonly ArchiveTransactionV2<MemoryDomainEvent>[]): FoldedMemoryState {
   const state = emptyState()
   for (const [transactionIndex, transaction] of transactions.entries()) {
     for (const event of transaction.events) {
@@ -518,7 +758,7 @@ function headerDigest(header: ArchiveHeaderV2): string {
   return digest(header)
 }
 
-function transactionDigest(transaction: Omit<ArchiveTransactionV2, 'digest'>): string {
+function transactionDigest<TEvent>(transaction: Omit<ArchiveTransactionV2<TEvent>, 'digest'>): string {
   return digest(transaction)
 }
 
@@ -566,6 +806,75 @@ function quarantine(
   }
 }
 
+function validateLegacyTransactions(
+  transactions: readonly ArchiveTransactionV2<LegacyMemoryDomainEventV1>[],
+): void {
+  const ids = new Set<string>()
+  const sources = new Map<string, { transactionId: string; kind: SourceUse['kind']; memoryId?: string }>()
+  const memories = new Map<string, Omit<LegacyMemoryRecordV1, 'status'> & { status: MemoryRecord['status'] }>()
+  const candidates = new Map<string, Omit<LegacyMemoryCandidateV1, 'status'> & { status: MemoryCandidate['status'] }>()
+  for (const [transactionIndex, transaction] of transactions.entries()) {
+    const line = transactionIndex + 2
+    for (const event of transaction.events) {
+      if (ids.has(event.id)) issue('duplicate-id', line, 0)
+      ids.add(event.id)
+      if ('event' in event && event.event === 'forgotten') {
+        const target = memories.get(event.memoryId)
+        if (target === undefined || target.status !== 'confirmed' || sources.has(event.sourceMessageId)) {
+          issue('invalid-state-transition', line, 0)
+        }
+        sources.set(event.sourceMessageId, { transactionId: transaction.id, kind: 'forget', memoryId: target.id })
+        target.status = 'forgotten'
+        continue
+      }
+      if ('event' in event && event.event === 'candidate') {
+        if (sources.has(event.sourceMessageId)) issue('duplicate-source', line, 0)
+        sources.set(event.sourceMessageId, { transactionId: transaction.id, kind: 'candidate' })
+        candidates.set(event.id, { ...event })
+        continue
+      }
+      if ('event' in event && event.event === 'candidate-resolution') {
+        const candidate = candidates.get(event.candidateId)
+        if (candidate === undefined || candidate.status !== 'pending') issue('invalid-state-transition', line, 0)
+        const source = sources.get(event.sourceMessageId)
+        if (event.decision === 'approved') {
+          const memory = event.memoryId === undefined ? undefined : memories.get(event.memoryId)
+          if (memory === undefined || memory.sourceCandidateId !== candidate.id || source?.kind !== 'approve'
+            || source.transactionId !== transaction.id || source.memoryId !== memory.id) {
+            issue('invalid-state-transition', line, 0)
+          }
+          candidate.status = 'approved'
+        } else {
+          if (source !== undefined) issue('duplicate-source', line, 0)
+          sources.set(event.sourceMessageId, { transactionId: transaction.id, kind: 'reject' })
+          candidate.status = 'rejected'
+        }
+        continue
+      }
+      const memory = { ...event } as Omit<LegacyMemoryRecordV1, 'status'> & { status: MemoryRecord['status'] }
+      const existingSource = sources.get(memory.sourceMessageId)
+      if (memory.sourceCandidateId !== undefined) {
+        const candidate = candidates.get(memory.sourceCandidateId)
+        if (candidate === undefined || candidate.status !== 'pending' || existingSource !== undefined) {
+          issue('invalid-state-transition', line, 0)
+        }
+        sources.set(memory.sourceMessageId, { transactionId: transaction.id, kind: 'approve', memoryId: memory.id })
+      } else if (memory.supersedesMemoryId !== undefined) {
+        const target = memories.get(memory.supersedesMemoryId)
+        if (target === undefined || target.status !== 'confirmed' || existingSource !== undefined) {
+          issue('invalid-state-transition', line, 0)
+        }
+        sources.set(memory.sourceMessageId, { transactionId: transaction.id, kind: 'replace', memoryId: memory.id })
+        target.status = 'superseded'
+      } else {
+        if (existingSource !== undefined) issue('duplicate-source', line, 0)
+        sources.set(memory.sourceMessageId, { transactionId: transaction.id, kind: 'memory', memoryId: memory.id })
+      }
+      memories.set(memory.id, memory)
+    }
+  }
+}
+
 export function inspectArchiveBytes(
   bytes: Buffer,
   limits: { maxArchiveBytes: number, maxTransactionBytes: number },
@@ -591,7 +900,7 @@ export function inspectArchiveBytes(
     return quarantine(bytes, 'unknown', 0, 0, 0, { code, line: 1, offset: 0 })
   }
   if (first.schemaVersion === 1) {
-    const legacyEvents: MemoryDomainEvent[] = []
+    const legacyEvents: LegacyMemoryDomainEventV1[] = []
     try {
       for (const line of lines) {
         if (line.bytes.length === 0) continue
@@ -602,18 +911,18 @@ export function inspectArchiveBytes(
         } catch {
           issue('interior-invalid-json', line.line, line.offset)
         }
-        legacyEvents.push(parseDomainEvent(value, line.line, line.offset))
+        legacyEvents.push(parseLegacyDomainEvent(value, line.line, line.offset))
       }
-      const state = foldTransactions([{
+      validateLegacyTransactions([{
         kind: 'transaction', schemaVersion: 2, id: 'legacy-v1', committedAt: '1970-01-01T00:00:00.000Z',
         previousDigest: '', events: legacyEvents, digest: '',
       }])
       return {
         inspection: {
-          state: 'migration-required', format: 'v1', sizeBytes: bytes.length, transactionCount: 0,
-          eventCount: legacyEvents.length, lastValidOffset: bytes.length, digest: contentDigest(bytes), issues: [],
+          state: 'scope-migration-required', format: 'v1', sizeBytes: bytes.length, transactionCount: 0,
+          eventCount: legacyEvents.length, lastValidOffset: bytes.length, digest: contentDigest(bytes),
+          issues: [{ code: 'scope-migration-required', line: 1, offset: 0 }],
         },
-        state,
       }
     } catch (error) {
       const found = error instanceof FormatIssue
@@ -637,7 +946,9 @@ export function inspectArchiveBytes(
   } catch {
     return quarantine(bytes, 'v2', 0, 0, 0, { code: 'invalid-header', line: 1, offset: 0 })
   }
-  const transactions: ArchiveTransactionV2[] = []
+  const transactions: ArchiveTransactionV2<MemoryDomainEvent>[] = []
+  const legacyTransactions: ArchiveTransactionV2<LegacyMemoryDomainEventV1>[] = []
+  let domainGeneration: 'unknown' | 'legacy' | 'scoped' = 'unknown'
   let previousDigest = headerDigest(header)
   let eventCount = 0
   let lastValidOffset = lines[0]!.offset + lines[0]!.bytes.length + (lines[0]!.complete ? 1 : 0)
@@ -664,21 +975,40 @@ export function inspectArchiveBytes(
         code: 'interior-invalid-json', line: line.line, offset: line.offset,
       })
     }
-    let transaction: ArchiveTransactionV2
+    let transaction: ArchiveTransactionV2<MemoryDomainEvent>
     try {
       if (value.kind !== 'transaction' || value.schemaVersion !== 2 || !Array.isArray(value.events) || value.events.length === 0) {
         issue('invalid-transaction', line.line, line.offset)
       }
-      const events = value.events.map(event => parseDomainEvent(event, line.line, line.offset))
+      const legacyFlags = value.events.map(event => {
+        const entry = record(event)
+        return entry.schemaVersion === 1 && entry.event !== 'observation'
+      })
+      const hasLegacy = legacyFlags.some(Boolean)
+      const hasScoped = legacyFlags.some(flag => !flag)
+      if (hasLegacy && hasScoped) issue('invalid-transaction', line.line, line.offset)
+      if ((hasLegacy && domainGeneration === 'scoped') || (hasScoped && domainGeneration === 'legacy')) {
+        issue('invalid-state-transition', line.line, line.offset)
+      }
+      domainGeneration = hasLegacy ? 'legacy' : 'scoped'
+      const events = hasLegacy
+        ? value.events.map(event => parseLegacyDomainEvent(event, line.line, line.offset))
+        : value.events.map(event => parseDomainEvent(event, line.line, line.offset))
       transaction = {
         kind: 'transaction', schemaVersion: 2, id: requiredString(value.id),
         committedAt: requiredString(value.committedAt), previousDigest: requiredString(value.previousDigest),
-        events, digest: requiredString(value.digest),
+        events: events as MemoryDomainEvent[], digest: requiredString(value.digest),
       }
       if (transaction.previousDigest !== previousDigest) issue('broken-previous-digest', line.line, line.offset)
       const { digest: suppliedDigest, ...unsigned } = transaction
       if (transactionDigest(unsigned) !== suppliedDigest) issue('digest-mismatch', line.line, line.offset)
-      foldEventValidation(transactions, transaction, line.line, line.offset)
+      if (hasLegacy) {
+        const legacyTransaction = { ...transaction, events: events as LegacyMemoryDomainEventV1[] }
+        validateLegacyTransactions([...legacyTransactions, legacyTransaction])
+        legacyTransactions.push(legacyTransaction)
+      } else {
+        foldEventValidation(transactions, transaction, line.line, line.offset)
+      }
     } catch (error) {
       const found = error instanceof FormatIssue
         ? error.issue
@@ -689,6 +1019,17 @@ export function inspectArchiveBytes(
     eventCount += transaction.events.length
     previousDigest = transaction.digest
     lastValidOffset = line.offset + line.bytes.length + 1
+  }
+  if (domainGeneration === 'legacy') {
+    return {
+      inspection: {
+        state: 'scope-migration-required', format: 'v2', sizeBytes: bytes.length,
+        transactionCount: legacyTransactions.length, eventCount, lastValidOffset,
+        digest: contentDigest(bytes), issues: [{ code: 'scope-migration-required', line: 2, offset: 0 }],
+      },
+      header,
+      lastDigest: previousDigest,
+    }
   }
   let state: FoldedMemoryState
   try {
@@ -717,12 +1058,12 @@ export function migrateV1ArchiveBytes(
 ): Buffer {
   const limits = { maxArchiveBytes: Number.MAX_SAFE_INTEGER, maxTransactionBytes: Number.MAX_SAFE_INTEGER }
   const parsed = inspectArchiveBytes(bytes, limits)
-  if (parsed.inspection.state !== 'migration-required' || parsed.inspection.format !== 'v1') {
+  if (parsed.inspection.state !== 'scope-migration-required' || parsed.inspection.format !== 'v1') {
     throw new Error('only a valid v1 memory archive can be migrated')
   }
   const events = lineOffsets(bytes).flatMap(line => {
     if (line.bytes.length === 0) return []
-    return [parseDomainEvent(JSON.parse(line.bytes.toString('utf8')) as unknown, line.line, line.offset)]
+    return [parseLegacyDomainEvent(JSON.parse(line.bytes.toString('utf8')) as unknown, line.line, line.offset)]
   })
   const now = options.now ?? (() => new Date())
   const createId = options.createId ?? randomUUID
@@ -739,8 +1080,153 @@ export function migrateV1ArchiveBytes(
     previousDigest: headerDigest(header),
     events,
   }
-  const transaction: ArchiveTransactionV2 = { ...unsigned, digest: transactionDigest(unsigned) }
+  const transaction: ArchiveTransactionV2<LegacyMemoryDomainEventV1> = {
+    ...unsigned,
+    digest: transactionDigest(unsigned),
+  }
   return Buffer.from(`${canonicalValue(header)}\n${canonicalValue(transaction)}\n`, 'utf8')
+}
+
+/** Explicit policy required to assign authority-bearing fields to legacy domain events. */
+export interface LegacyScopeMigrationPolicy {
+  ownerId: string
+  authority: string
+  scope: MemoryScopeV1
+  memoryKind: MemoryRecord['memoryKind']
+  recordedAtPolicy: 'legacy-created-at'
+}
+
+function legacyTransactionsFromBytes(bytes: Buffer): LegacyMemoryDomainEventV1[][] {
+  const lines = lineOffsets(bytes).filter(line => line.bytes.length > 0)
+  const first = record(JSON.parse(lines[0]!.bytes.toString('utf8')) as unknown)
+  if (first.schemaVersion === 1) {
+    return [lines.map(line => parseLegacyDomainEvent(
+      JSON.parse(line.bytes.toString('utf8')) as unknown,
+      line.line,
+      line.offset,
+    ))]
+  }
+  return lines.slice(1).map(line => {
+    const transaction = record(JSON.parse(line.bytes.toString('utf8')) as unknown)
+    if (!Array.isArray(transaction.events)) throw new Error('legacy storage transaction is invalid')
+    return transaction.events.map(event => parseLegacyDomainEvent(event, line.line, line.offset))
+  })
+}
+
+/** Convert raw-v1 or storage-v2/domain-v1 bytes using only an explicit Owner policy. */
+export function migrateLegacyArchiveToScopedBytes(
+  bytes: Buffer,
+  policyValue: LegacyScopeMigrationPolicy,
+  options: { now?: () => Date; createId?: () => string } = {},
+): Buffer {
+  const parsed = inspectArchiveBytes(bytes, {
+    maxArchiveBytes: Number.MAX_SAFE_INTEGER,
+    maxTransactionBytes: Number.MAX_SAFE_INTEGER,
+  })
+  if (parsed.inspection.state !== 'scope-migration-required') {
+    throw new Error('only a valid legacy-domain archive can be scope migrated')
+  }
+  const policy: LegacyScopeMigrationPolicy = {
+    ownerId: requiredString(policyValue.ownerId),
+    authority: requiredString(policyValue.authority),
+    scope: parseMemoryScopeV1(policyValue.scope),
+    memoryKind: parseMemoryKind(policyValue.memoryKind),
+    recordedAtPolicy: policyValue.recordedAtPolicy === 'legacy-created-at'
+      ? 'legacy-created-at'
+      : (() => { throw new Error('unsupported recordedAt policy') })(),
+  }
+  const now = options.now ?? (() => new Date())
+  const createId = options.createId ?? randomUUID
+  const migratedAt = now().toISOString()
+  const header: ArchiveHeaderV2 = {
+    kind: 'mistymoon-memory-archive', schemaVersion: 2, archiveId: createId(), createdAt: migratedAt,
+    integrity: { algorithm: 'sha256', canonicalization: 'sorted-json-v1' },
+  }
+  let previousDigest = headerDigest(header)
+  const transactions: ArchiveTransactionV2[] = []
+  for (const legacyEvents of legacyTransactionsFromBytes(bytes)) {
+    const observations = new Map<string, MemoryObservationV1>()
+    const observationFor = (event: LegacyMemoryDomainEventV1): MemoryObservationV1 => {
+      const existing = observations.get(event.sourceMessageId)
+      if (existing !== undefined) return existing
+      const sourceKind: MemoryObservationSourceKind = 'event' in event
+        || ('sourceCandidateId' in event && event.sourceCandidateId !== undefined)
+        || ('supersedesMemoryId' in event && event.supersedesMemoryId !== undefined)
+        ? 'governance-operation'
+        : 'legacy-import'
+      const observation: MemoryObservationV1 = {
+        schemaVersion: 1,
+        event: 'observation',
+        id: createId(),
+        ownerId: policy.ownerId,
+        authority: policy.authority,
+        scope: policy.scope,
+        source: { kind: sourceKind, id: event.sourceMessageId },
+        observedAt: timestamp(event.createdAt),
+      }
+      observations.set(event.sourceMessageId, observation)
+      return observation
+    }
+    const events: MemoryDomainEvent[] = []
+    for (const legacy of legacyEvents) {
+      const observation = observationFor(legacy)
+      if (!events.includes(observation)) events.push(observation)
+      if ('event' in legacy && legacy.event === 'forgotten') {
+        events.push({
+          schemaVersion: 2, event: 'forgotten', id: legacy.id, createdAt: timestamp(legacy.createdAt),
+          ownerId: policy.ownerId, scope: policy.scope, observationId: observation.id,
+          memoryId: legacy.memoryId, sourceMessageId: legacy.sourceMessageId,
+        })
+      } else if ('event' in legacy && legacy.event === 'candidate-resolution') {
+        events.push({
+          schemaVersion: 2, event: 'candidate-resolution', id: legacy.id, createdAt: timestamp(legacy.createdAt),
+          ownerId: policy.ownerId, scope: policy.scope, observationId: observation.id,
+          candidateId: legacy.candidateId, decision: legacy.decision, sourceMessageId: legacy.sourceMessageId,
+          ...(legacy.memoryId === undefined ? {} : { memoryId: legacy.memoryId }),
+        })
+      } else if ('event' in legacy && legacy.event === 'candidate') {
+        events.push({
+          schemaVersion: 2, event: 'candidate', id: legacy.id, ownerId: policy.ownerId, scope: policy.scope,
+          observationId: observation.id, memoryKind: policy.memoryKind,
+          createdAt: timestamp(legacy.createdAt), recordedAt: timestamp(legacy.createdAt),
+          content: legacy.content, visibility: legacy.visibility, sourceMessageId: legacy.sourceMessageId,
+          status: 'pending',
+        })
+      } else {
+        events.push({
+          schemaVersion: 2, id: legacy.id, ownerId: policy.ownerId, scope: policy.scope,
+          observationId: observation.id, memoryKind: policy.memoryKind,
+          createdAt: timestamp(legacy.createdAt), recordedAt: timestamp(legacy.createdAt),
+          content: legacy.content, visibility: legacy.visibility, sourceMessageId: legacy.sourceMessageId,
+          ...(legacy.sourceCandidateId === undefined ? {} : { sourceCandidateId: legacy.sourceCandidateId }),
+          ...(legacy.supersedesMemoryId === undefined ? {} : { supersedesMemoryId: legacy.supersedesMemoryId }),
+          status: 'confirmed',
+        })
+      }
+    }
+    const unsigned = {
+      kind: 'transaction' as const,
+      schemaVersion: 2 as const,
+      id: createId(),
+      committedAt: migratedAt,
+      previousDigest,
+      events,
+    }
+    const transaction = { ...unsigned, digest: transactionDigest(unsigned) }
+    transactions.push(transaction)
+    previousDigest = transaction.digest
+  }
+  const result = Buffer.from(
+    `${canonicalValue(header)}\n${transactions.map(transaction => canonicalValue(transaction)).join('\n')}\n`,
+    'utf8',
+  )
+  if (inspectArchiveBytes(result, {
+    maxArchiveBytes: Number.MAX_SAFE_INTEGER,
+    maxTransactionBytes: Number.MAX_SAFE_INTEGER,
+  }).inspection.state !== 'ready') {
+    throw new Error('scoped memory migration output did not validate')
+  }
+  return result
 }
 
 function foldEventValidation(
@@ -978,6 +1464,12 @@ export class MemoryArchiveStorage {
       }))
       if (parsed.inspection.state === 'migration-required') {
         throw new MemoryArchiveError('memory archive requires explicit v1 migration', 'MEMORY_ARCHIVE_MIGRATION_REQUIRED')
+      }
+      if (parsed.inspection.state === 'scope-migration-required') {
+        throw new MemoryArchiveError(
+          'memory archive requires explicit scoped-record migration',
+          'MEMORY_ARCHIVE_SCOPE_MIGRATION_REQUIRED',
+        )
       }
       if (parsed.inspection.state !== 'ready' || parsed.state === undefined || parsed.lastDigest === undefined) {
         throw new MemoryArchiveError('memory archive is quarantined', 'MEMORY_ARCHIVE_QUARANTINED')

@@ -5,7 +5,12 @@
 
 import { resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import type { CompanionMemoryArchive, MemoryVisibility } from './index.js'
+import type {
+  CompanionMemoryArchive,
+  MemoryAccessContextV1,
+  MemoryKind,
+  MemoryVisibility,
+} from './index.js'
 
 /** Result of inspecting a legacy MistyMoon database without changing either store. */
 export interface LegacyMemoryPreview {
@@ -21,6 +26,10 @@ export interface LegacyMemoryPreview {
 export interface LegacyMemoryMigrationOptions {
   sourcePath: string
   archive: CompanionMemoryArchive
+  /** Explicit trusted target domain; legacy content is never used to infer it. */
+  context: MemoryAccessContextV1
+  /** Explicit default applied uniformly; legacy content is never classified automatically. */
+  memoryKind: MemoryKind
 }
 
 /** Completed import counts alongside the source preview. */
@@ -128,6 +137,8 @@ export async function migrateLegacyMemoryDatabase(
     `).all() as unknown as LegacyMemoryRow[]
     for (const row of rows) {
       const result = await options.archive.importConfirmed({
+        context: options.context,
+        memoryKind: options.memoryKind,
         sourceMessageId: `legacy-mistymoon:${row.id}`,
         content: row.content,
         createdAt: row.created_at,

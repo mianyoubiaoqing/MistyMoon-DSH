@@ -36,10 +36,10 @@ const DSH_PACKAGE_MANIFEST = require.resolve('@deepseek-ai/dsh/package.json')
 const DSH_PACKAGE_ROOT = dirname(DSH_PACKAGE_MANIFEST)
 const SHIPPED_PRESET_ROOT = join(DSH_PACKAGE_ROOT, 'config', 'agent-presets')
 const ANCHORED_STANDARD_SOURCE = fileURLToPath(new URL(
-  '../../work-agent/presets/mistymoon-work-anchored-standard-v1',
+  '../../work-agent/presets/mistymoon-work-anchored-standard-v2',
   import.meta.url,
 ))
-const ANCHORED_STANDARD_PRESET_ID = 'mistymoon-work-anchored-standard-v1'
+const ANCHORED_STANDARD_PRESET_ID = 'mistymoon-work-anchored-standard-v2'
 
 class RecordingAdapter extends LlmAdapter {
   readonly requests: GenerateOptions[] = []
@@ -164,7 +164,7 @@ describe('Anchored preset provision through a restarted headless DSH runtime', (
       })
       expect(plan.status).toBe('ready')
       expect(plan.sourceFingerprint)
-        .toBe('c32cf15b81e38de65325c99e9296ea116a9b6d414111732d0ef0d36c3138aa5e')
+        .toBe('972607b265928ef23368f35a3cd196d37774a7a2850c8effb48b3dbcb696d0d0')
       await applyWorkPresetProvision(plan, { ownerConfirmed: true })
 
       const adapter = new RecordingAdapter()

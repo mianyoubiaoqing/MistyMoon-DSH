@@ -14,16 +14,23 @@ import {
   writeArchiveCheckpoint,
 } from '../src/storage/index.js'
 
-function confirmed(id: string, sourceMessageId: string): MemoryDomainEvent {
-  return {
-    schemaVersion: 1,
-    id,
+function confirmed(id: string, sourceMessageId: string): MemoryDomainEvent[] {
+  const observationId = `observation-${id}`
+  return [{
+    schemaVersion: 1, event: 'observation', id: observationId,
+    ownerId: 'owner-fixture', authority: 'local-dsh-host-rpc',
+    scope: { version: 1, kind: 'companion-reality' },
+    source: { kind: 'dsh-message', id: sourceMessageId }, observedAt: '2026-08-18T00:00:00.000Z',
+  }, {
+    schemaVersion: 2,
+    id, ownerId: 'owner-fixture', scope: { version: 1, kind: 'companion-reality' },
+    observationId, memoryKind: 'summary', recordedAt: '2026-08-18T00:00:00.000Z',
     createdAt: '2026-08-18T00:00:00.000Z',
     content: `Neutral memory ${id}`,
     visibility: 'personal',
     sourceMessageId,
     status: 'confirmed',
-  }
+  }]
 }
 
 function deferred(): { promise: Promise<void>, resolve: () => void } {
@@ -78,7 +85,7 @@ describe('memory storage failure boundaries', () => {
     const before = storage.snapshot()
 
     await expect(storage.transact(() => ({
-      events: [confirmed('memory-fault', 'source-fault')],
+      events: confirmed('memory-fault', 'source-fault'),
       result: 'committed',
     }))).rejects.toThrow('injected')
 
@@ -158,20 +165,34 @@ describe('memory storage failure boundaries', () => {
         checkpointWriter,
         createTransactionId: () => transactionIds.shift() ?? 'unexpected-transaction',
       })
+      const candidateObservation: MemoryDomainEvent = {
+        schemaVersion: 1, event: 'observation', id: 'candidate-observation', ownerId: 'owner-fixture',
+        authority: 'local-dsh-host-rpc', scope: { version: 1, kind: 'companion-reality' },
+        source: { kind: 'governance-operation', id: 'proposal-source' }, observedAt: '2026-08-18T00:00:00.000Z',
+      }
       const candidate: MemoryDomainEvent = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         event: 'candidate',
         id: 'candidate-1',
+        ownerId: 'owner-fixture', scope: { version: 1, kind: 'companion-reality' },
+        observationId: 'candidate-observation', memoryKind: 'summary', recordedAt: '2026-08-18T00:00:00.000Z',
         createdAt: '2026-08-18T00:00:00.000Z',
         content: 'Neutral approval candidate',
         visibility: 'personal',
         sourceMessageId: 'proposal-source',
         status: 'pending',
       }
-      await storage.transact(() => ({ events: [candidate], result: undefined }))
+      await storage.transact(() => ({ events: [candidateObservation, candidate], result: undefined }))
+      const approvalObservation: MemoryDomainEvent = {
+        schemaVersion: 1, event: 'observation', id: 'approval-observation', ownerId: 'owner-fixture',
+        authority: 'local-dsh-host-rpc', scope: { version: 1, kind: 'companion-reality' },
+        source: { kind: 'governance-operation', id: 'approval-source' }, observedAt: '2026-08-18T00:00:00.000Z',
+      }
       const approvedMemory: MemoryDomainEvent = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         id: 'memory-approved',
+        ownerId: 'owner-fixture', scope: { version: 1, kind: 'companion-reality' },
+        observationId: 'approval-observation', memoryKind: 'summary', recordedAt: '2026-08-18T00:00:00.000Z',
         createdAt: '2026-08-18T00:00:00.000Z',
         content: 'Neutral approved memory',
         visibility: 'personal',
@@ -180,9 +201,11 @@ describe('memory storage failure boundaries', () => {
         sourceCandidateId: 'candidate-1',
       }
       const resolution: MemoryDomainEvent = {
-        schemaVersion: 1,
+        schemaVersion: 2,
         event: 'candidate-resolution',
         id: 'resolution-1',
+        ownerId: 'owner-fixture', scope: { version: 1, kind: 'companion-reality' },
+        observationId: 'approval-observation',
         createdAt: '2026-08-18T00:00:00.000Z',
         candidateId: 'candidate-1',
         decision: 'approved',
@@ -191,7 +214,7 @@ describe('memory storage failure boundaries', () => {
       }
 
       await expect(storage.transact(() => ({
-        events: [approvedMemory, resolution],
+        events: [approvalObservation, approvedMemory, resolution],
         result: undefined,
       }))).rejects.toThrow('injected approval')
 
@@ -200,8 +223,8 @@ describe('memory storage failure boundaries', () => {
         candidates: [{ id: 'candidate-1', status: 'pending' }],
       })
       const reopened = await MemoryArchiveStorage.open({ path })
-      expect([1, 3]).toContain(reopened.inspection().eventCount)
-      expect(reopened.inspection().eventCount).not.toBe(2)
+      expect([2, 5]).toContain(reopened.inspection().eventCount)
+      expect(reopened.inspection().eventCount).not.toBe(3)
       if (reopened.inspection().state === 'ready') {
         expect(reopened.snapshot()?.records).toHaveLength(0)
         expect(reopened.snapshot()?.candidates).toEqual([expect.objectContaining({ status: 'pending' })])
@@ -235,7 +258,7 @@ describe('memory storage failure boundaries', () => {
     }
     const storage = await MemoryArchiveStorage.open({ path, commitWriter: writer, disposeTimeoutMs: 1_000 })
     const commit = storage.transact(() => ({
-      events: [confirmed('memory-dispose', 'source-dispose')],
+      events: confirmed('memory-dispose', 'source-dispose'),
       result: 'committed',
     }))
     await entered.promise

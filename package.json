@@ -1,12 +1,10 @@
 {
   "name": "@mistymoon/dsh",
-  "version": "0.0.1-rc.5",
+  "version": "0.0.1-rc.6",
   "description": "Long-term companion plugin suite for DeepSeek Harness",
   "type": "module",
   "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "files": [
     "THIRD_PARTY_NOTICES.md",
     "cordis.patch.yml",
@@ -16,6 +14,7 @@
     "packages/foundation/personas/template/persona.json",
     "packages/foundation/personas/example/persona.json",
     "packages/foundation/presets",
+    "packages/installer/lib",
     "packages/memory/lib",
     "packages/work-agent/lib",
     "packages/work-agent/presets",
@@ -46,6 +45,10 @@
       "types": "./packages/memory/lib/index.d.ts",
       "default": "./packages/memory/lib/index.js"
     },
+    "./memory/domain": {
+      "types": "./packages/memory/lib/domain.d.ts",
+      "default": "./packages/memory/lib/domain.js"
+    },
     "./memory/legacy-migration": {
       "types": "./packages/memory/lib/legacy-migration.d.ts",
       "default": "./packages/memory/lib/legacy-migration.js"
@@ -53,6 +56,10 @@
     "./memory/maintenance": {
       "types": "./packages/memory/lib/maintenance.d.ts",
       "default": "./packages/memory/lib/maintenance.js"
+    },
+    "./installer": {
+      "types": "./packages/installer/lib/index.d.ts",
+      "default": "./packages/installer/lib/index.js"
     },
     "./work-agent": {
       "types": "./packages/work-agent/lib/index.d.ts",
@@ -63,6 +70,9 @@
       "default": "./packages/work-agent-dsh/lib/index.js"
     },
     "./package.json": "./package.json"
+  },
+  "bin": {
+    "mistymoon-dsh-install": "./packages/installer/lib/cli.js"
   },
   "dsh": {
     "bundle": {
@@ -85,7 +95,7 @@
   },
   "scripts": {
     "audit:publication": "tsx scripts/audit-publication.ts",
-    "build": "pnpm --filter @mistymoon/dsh-identity run build && pnpm --filter @mistymoon/dsh-foundation run build && pnpm --filter @mistymoon/dsh-memory run build && pnpm --filter @mistymoon/dsh-work-agent run build && pnpm --filter @mistymoon/dsh-work-agent-dsh run build && pnpm --filter @mistymoon/dsh-settings-ui run build",
+    "build": "pnpm --filter @mistymoon/dsh-installer run build && pnpm --filter @mistymoon/dsh-identity run build && pnpm --filter @mistymoon/dsh-foundation run build && pnpm --filter @mistymoon/dsh-memory run build && pnpm --filter @mistymoon/dsh-work-agent run build && pnpm --filter @mistymoon/dsh-work-agent-dsh run build && pnpm --filter @mistymoon/dsh-settings-ui run build",
     "preview:dump": "tsx scripts/preview.ts dump",
     "preview:install": "tsx scripts/preview.ts install",
     "preview:migrate-memory": "tsx scripts/migrate-memory.ts",

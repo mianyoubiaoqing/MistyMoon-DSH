@@ -18,6 +18,7 @@ import {
   type GenerateOptions,
   type StreamChunk,
 } from '@deepseek-ai/dsh-llm'
+import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { defineContentToolFixture } from '@deepseek-ai/dsh-tools'
 import {
@@ -26,23 +27,34 @@ import {
   RoleplayController,
 } from '@mistymoon/dsh/foundation'
 import {
-  applyAgentPresetProvision,
-  previewAgentPresetProvision,
+  applyMistyMoonInstallation,
+  packProfileBundle,
+  previewMistyMoonInstallation,
 } from '@mistymoon/dsh-installer'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { RpWorkDelegationRuntime } from '../src/index.js'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { FLASH_PROVIDER_NAME, RpWorkDelegationRuntime } from '../src/index.js'
 
 const require = createRequire(import.meta.url)
 const DSH_PACKAGE_MANIFEST = require.resolve('@deepseek-ai/dsh/package.json')
 const DSH_PACKAGE_ROOT = dirname(DSH_PACKAGE_MANIFEST)
 const SHIPPED_PRESET_ROOT = join(DSH_PACKAGE_ROOT, 'config', 'agent-presets')
 const WORKSPACE_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
-const RP_PRESET_SOURCE = fileURLToPath(new URL(
-  '../../foundation/presets/mistymoon-rp-host-v1',
-  import.meta.url,
-))
-const RP_PRESET_ID = 'mistymoon-rp-host-v1'
+const RP_PRESET_ID = 'mistymoon-rp-host-v2'
 const INITIAL_PRESET_ID = 'code'
+let packedBundleRoot: string
+let packedBundlePath: string
+
+beforeAll(async () => {
+  packedBundleRoot = await mkdtemp(join(tmpdir(), 'mistymoon-rp-host-bundle-'))
+  packedBundlePath = await packProfileBundle({
+    workspaceRoot: WORKSPACE_ROOT,
+    outputPath: join(packedBundleRoot, 'mistymoon-dsh.tgz'),
+  })
+}, 180_000)
+
+afterAll(async () => {
+  await rm(packedBundleRoot, { recursive: true, force: true })
+})
 
 const PERSONA = {
   schemaVersion: 2,
@@ -77,18 +89,35 @@ class RecordingAdapter extends LlmAdapter {
       provider,
       id: model,
       name: model,
-      reasoning: { efforts: [{ id: ReasoningEffortId('high'), name: 'High' }] },
+      reasoning: {
+        efforts: [
+          { id: ReasoningEffortId('high'), name: 'High' },
+          { id: ReasoningEffortId('max'), name: 'Max' },
+        ],
+      },
     })
   }
 
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
+    const text = options.provider === 'deepseek-official'
+      ? JSON.stringify({
+          version: 1,
+          status: 'completed',
+          summary: 'Inspected the neutral delegated fixture.',
+          changedFiles: [],
+          checksRun: [],
+          risks: [],
+          needsUserAction: [],
+          artifacts: [],
+        })
+      : 'Direct neutral companion reply.'
     yield { type: 'block-start', index: 0, blockType: 'text' }
-    yield { type: 'text-delta', index: 0, text: 'Direct neutral companion reply.' }
+    yield { type: 'text-delta', index: 0, text }
     yield {
       type: 'block-end',
       index: 0,
-      block: { type: 'text', text: 'Direct neutral companion reply.' },
+      block: { type: 'text', text },
     }
     yield { type: 'usage', usage: { inputTokens: 1, outputTokens: 1 } }
     yield { type: 'finish', reason: { kind: 'stop' } }
@@ -155,6 +184,7 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
     let runtimeCtx: Awaited<ReturnType<typeof bootHeadlessHarness>> | undefined
     let ownerFiber: Awaited<ReturnType<Awaited<ReturnType<typeof bootHeadlessHarness>>['inject']>> | undefined
     let handle: Awaited<ReturnType<Awaited<ReturnType<typeof bootHeadlessHarness>>['agents']['create']>> | undefined
+    let workRun: Awaited<ReturnType<Awaited<ReturnType<typeof bootHeadlessHarness>>['subagents']['start']>> | undefined
     const unregisterProviders: Array<() => void> = []
 
     try {
@@ -163,15 +193,14 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
       await disposeContext(discoveryCtx)
       discoveryCtx = undefined
 
-      const plan = await previewAgentPresetProvision({
-        version: 1,
-        action: 'install',
+      const plan = await previewMistyMoonInstallation({
+        packageRoot: WORKSPACE_ROOT,
+        dshRuntimeRoot: WORKSPACE_ROOT,
         dshHome,
-        sourceDirectory: RP_PRESET_SOURCE,
-        nativePresetId: RP_PRESET_ID,
+        bundleArchivePath: packedBundlePath,
       })
       expect(plan.status).toBe('ready')
-      await applyAgentPresetProvision(plan, { ownerConfirmed: true })
+      await applyMistyMoonInstallation(plan, { ownerConfirmed: true })
 
       runtimeCtx = await bootHeadlessHarness(dshHome)
       const discovered = await runtimeCtx.agentPresets.resolve(RP_PRESET_ID)
@@ -180,6 +209,12 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
         trust: 'user',
       })
       expect(discovered.broken).toBeUndefined()
+      const discoveredWork = await runtimeCtx.agentPresets.resolve('mistymoon-work-anchored-standard-v2')
+      expect(discoveredWork).toMatchObject({
+        id: 'mistymoon-work-anchored-standard-v2',
+        trust: 'user',
+      })
+      expect(discoveredWork.broken).toBeUndefined()
       const projection = await PublishedPersonaProjection.load(personaPath)
       runtimeCtx.effect(() => runtimeCtx!.provide('mistymoonPersonaProjection', projection))
       runtimeCtx.effect(() => runtimeCtx!.provide('mistymoonRoleplay', new RoleplayController('immersive')))
@@ -190,7 +225,7 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
         async execute() { return [{ type: 'text', text: 'legacy' }] },
       }))
       const adapter = new RecordingAdapter()
-      const unregisterAdapter = runtimeCtx.llm.registerAdapter(['deepseek-official'], adapter)
+      const unregisterAdapter = runtimeCtx.llm.registerAdapter(['mock', 'deepseek-official'], adapter)
       const workRuntime = new RpWorkDelegationRuntime(runtimeCtx)
       for (const provider of workRuntime.providers()) {
         unregisterProviders.push(runtimeCtx.subagents.registerProvider(provider))
@@ -201,7 +236,7 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
         handlePromise = injectedCtx.agents.create({
           sessionId: SessionId(`rp-host-${crypto.randomUUID()}`),
           meta: { agentPreset: INITIAL_PRESET_ID, cwd: process.cwd() },
-          agentOptions: { provider: 'mock', model: 'fallback-model' },
+          agentOptions: { provider: 'mock', model: 'ui-selected-model' },
           async setup(agentCtx) {
             await injectedCtx.agentPresets.mount(agentCtx, INITIAL_PRESET_ID)
           },
@@ -218,14 +253,21 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
         source: { kind: 'user' },
       }))
       await handle.agent.whenIdle()
+      expect(resolveSessionPreset(handle.agent.session)).toBe(RP_PRESET_ID)
+      expect(runtimeCtx.agentPresets.composedPreset(handle.agent.ctx)).toBe(RP_PRESET_ID)
 
       const assembly = await handle.agent.ctx.systemPrompt.assemble(assembleContextFor(handle.agent))
       const toolNames = assembly.tools.map(tool => tool.name)
       expect(assembly.sections.find(section => section.name === 'deployment:persona')?.text)
         .toContain('You are Nova.')
+      expect(assembly.sections.map(section => section.name)).not.toContain('harness:identity')
+      expect(assembly.sections.map(section => section.name)).toContain('tool:write')
       expect(toolNames).toEqual(expect.arrayContaining([
         'web_search',
         'web_fetch',
+        'read',
+        'grep',
+        'glob',
         'mistymoon_code_flash',
       ]))
       expect(toolNames).not.toContain('mistymoon_code_pro')
@@ -235,24 +277,52 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
         .some(message => message.source.kind === 'user'))
       expect(ownerRequests).toHaveLength(1)
       expect(ownerRequests[0]).toMatchObject({
-        provider: 'deepseek-official',
-        model: 'deepseek-v4-flash',
-        reasoningEffort: 'high',
+        provider: 'mock',
+        model: 'ui-selected-model',
       })
       expect(ownerRequests[0]?.system).toContain('You are Nova.')
+      expect(ownerRequests[0]?.system)
+        .not.toContain('You are an AI agent powered by DeepSeek Harness.')
+      expect(ownerRequests[0]?.messages).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'text',
+              text: expect.stringContaining('MistyMoon output presentation profile'),
+            }),
+          ]),
+        }),
+      ]))
       expect(handle.agent.session.requestHeader()).toMatchObject({
         system: expect.stringContaining('You are Nova.'),
         config: {
-          provider: 'deepseek-official',
-          model: 'deepseek-v4-flash',
-          reasoningEffort: 'high',
+          provider: 'mock',
+          model: 'ui-selected-model',
         },
       })
       expect(handle.agent.session.events.some(event => event.type === 'assistant/message'
         && event.data.message.content.some(block => block.type === 'text'
           && block.text === 'Direct neutral companion reply.'))).toBe(true)
+
+      workRun = await runtimeCtx.subagents.start(FLASH_PROVIDER_NAME, {
+        parent: handle.agent,
+        prompt: [{ type: 'text', text: 'Inspect the neutral delegated fixture.' }],
+        signal: new AbortController().signal,
+      })
+      await expect(workRun.result).resolves.toMatchObject({
+        stopReason: 'completed',
+        structured: {
+          version: 1,
+          summary: 'Inspected the neutral delegated fixture.',
+        },
+      })
+      expect(workRun.localAgent?.session.header).toMatchObject({
+        parentSession: handle.agent.session.id,
+        agentPreset: 'mistymoon-work-anchored-standard-v2',
+      })
       unregisterAdapter()
     } finally {
+      await workRun?.dispose()
       await handle?.dispose()
       for (const unregister of unregisterProviders.reverse()) unregister()
       await ownerFiber?.dispose()
@@ -260,5 +330,5 @@ describe('RP Host preset through a restarted headless DSH runtime', () => {
       await disposeContext(discoveryCtx)
       await rm(dshHome, { recursive: true, force: true })
     }
-  }, 120_000)
+  }, 240_000)
 })

@@ -289,8 +289,22 @@ function assertSystemClean(request, label) {
 {
   const root = await mkdtemp(join(tmpdir(), 'mistymoon-built-memory-'))
   const path = join(root, 'memories.jsonl')
-  const archive = await Memory.openMemoryArchive({ path, createId: () => 'built-memory-1' })
-  await archive.observeExplicit({ sourceMessageId: 'built-source-1', text: '请记住：中性 built memory。' })
+  const access = {
+    version: 1,
+    ownerId: 'built-owner',
+    authority: 'local-dsh-host-rpc',
+    scope: { version: 1, kind: 'companion-reality' },
+    channelDisclosure: 'personal-only',
+    requestIntent: 'ordinary',
+  }
+  const ids = ['built-observation-1', 'built-memory-1']
+  const archive = await Memory.openMemoryArchive({ path, createId: () => ids.shift() ?? 'unexpected-id' })
+  await archive.observeExplicit({
+    context: access,
+    memoryKind: 'summary',
+    sourceMessageId: 'built-source-1',
+    text: '请记住：中性 built memory。',
+  })
   if (archive.inspection().state !== 'ready' || archive.inspection().transactionCount !== 1) {
     throw new Error('built Memory archive did not create one ready v2 transaction')
   }
@@ -298,7 +312,7 @@ function assertSystemClean(request, label) {
   await appendFile(path, '{"kind":"transaction"', 'utf8')
   const quarantined = await Memory.openMemoryArchive({ path })
   if (quarantined.inspection().issues[0]?.code !== 'trailing-partial-transaction'
-    || quarantined.recall({ query: 'built memory' }).length !== 0) {
+    || quarantined.recall({ context: access, query: 'built memory' }).length !== 0) {
     throw new Error('built Memory archive did not fail closed on a partial transaction')
   }
   await quarantined.dispose()
@@ -314,7 +328,8 @@ function assertSystemClean(request, label) {
     status: 'confirmed',
   })}\n`, 'utf8')
   const legacy = await Memory.openMemoryArchive({ path: legacyPath })
-  if (legacy.inspection().state !== 'migration-required' || legacy.list().length !== 0) {
+  if (legacy.inspection().state !== 'scope-migration-required'
+    || legacy.list({ context: access }).length !== 0) {
     throw new Error('built Memory archive did not fail closed on v1 input')
   }
   await legacy.dispose()

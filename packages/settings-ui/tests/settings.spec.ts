@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { Context } from '@deepseek-ai/cordis'
 import { initializePersona } from '@mistymoon/dsh-foundation/persona-home'
-import { openMemoryArchive } from '@mistymoon/dsh-memory'
+import { openMemoryArchive, type MemoryAccessContextV1, type MemoryGovernanceService } from '@mistymoon/dsh-memory'
 import { RpWorkDelegationRuntime } from '@mistymoon/dsh-work-agent-dsh'
 import {
   applyMistyMoonCharacterCard,
@@ -21,6 +21,14 @@ import {
 import { DEFAULT_CHARACTER_CARD_MAPPING } from '@mistymoon/dsh-foundation/character-card'
 
 const template = join(import.meta.dirname, '..', '..', 'foundation', 'personas', 'template', 'persona.json')
+const memoryAccess: MemoryAccessContextV1 = {
+  version: 1,
+  ownerId: 'owner-fixture',
+  authority: 'local-dsh-host-rpc',
+  scope: { version: 1, kind: 'companion-reality' },
+  channelDisclosure: 'owner-confidential',
+  requestIntent: 'explicit-confidential-recall',
+}
 
 describe('MistyMoon settings Host API', () => {
   it('saves persona changes as a draft and publishes only on explicit request', async () => {
@@ -88,32 +96,45 @@ describe('MistyMoon settings Host API', () => {
 
   it('reviews candidates through the same archive used by memory recall', async () => {
     const home = await mkdtemp(join(tmpdir(), 'mistymoon-candidate-settings-'))
-    const ids = ['candidate-1', 'memory-1', 'event-1', 'candidate-2', 'event-2']
+    const ids = [
+      'observation-1', 'candidate-1', 'observation-2', 'candidate-2',
+      'observation-3', 'memory-1', 'event-1', 'observation-4', 'event-2',
+    ]
     const archive = await openMemoryArchive({
       path: join(home, 'memory', 'memories.jsonl'),
       createId: () => ids.shift() ?? 'unexpected-id',
       now: () => new Date('2026-08-16T00:00:00.000Z'),
     })
     const approvedCandidate = await archive.propose({
+      context: memoryAccess,
+      memoryKind: 'summary',
       sourceMessageId: 'proposal-1',
       content: '主人周末会整理书桌。',
       visibility: 'personal',
     })
     const rejectedCandidate = await archive.propose({
+      context: memoryAccess,
+      memoryKind: 'summary',
       sourceMessageId: 'proposal-2',
       content: '主人每天凌晨四点起床。',
       visibility: 'personal',
     })
 
-    expect(readMistyMoonCandidates(archive)).toEqual([rejectedCandidate, approvedCandidate])
-    await approveMistyMoonCandidate(archive, approvedCandidate.id, 'approve-1')
-    await rejectMistyMoonCandidate(archive, rejectedCandidate.id, 'reject-1')
+    const governance: MemoryGovernanceService = {
+      listCandidates: input => archive.listCandidates({ context: memoryAccess, ...input }),
+      approveCandidate: input => archive.approveCandidate({ context: memoryAccess, ...input }),
+      rejectCandidate: input => archive.rejectCandidate({ context: memoryAccess, ...input }),
+    }
 
-    expect(readMistyMoonCandidates(archive)).toEqual([])
-    expect(archive.recall({ query: '周末' })).toEqual([
+    expect(readMistyMoonCandidates(governance)).toEqual([rejectedCandidate, approvedCandidate])
+    await approveMistyMoonCandidate(governance, approvedCandidate.id, 'approve-1')
+    await rejectMistyMoonCandidate(governance, rejectedCandidate.id, 'reject-1')
+
+    expect(readMistyMoonCandidates(governance)).toEqual([])
+    expect(archive.recall({ context: memoryAccess, query: '周末' })).toEqual([
       expect.objectContaining({ content: '主人周末会整理书桌。', sourceCandidateId: approvedCandidate.id }),
     ])
-    expect(archive.recall({ query: '凌晨四点' })).toEqual([])
+    expect(archive.recall({ context: memoryAccess, query: '凌晨四点' })).toEqual([])
   })
 
   it('lists and saves only credential-free Work models registered in DSH', async () => {

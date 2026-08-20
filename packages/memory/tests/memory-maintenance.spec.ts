@@ -12,9 +12,17 @@ import {
   rehearseMemoryArchiveRollback,
   type MemoryMaintenancePlan,
 } from '../src/maintenance.js'
-import { inspectArchiveBytes, MemoryArchiveStorage } from '../src/storage/index.js'
+import { inspectArchiveBytes, MemoryArchiveStorage, migrateV1ArchiveBytes } from '../src/storage/index.js'
+import { PERSONAL_COMPANION_ACCESS } from './fixtures.js'
 
 const execFileAsync = promisify(execFile)
+const SCOPE_MIGRATION = {
+  ownerId: 'owner-fixture',
+  authority: 'local-dsh-host-rpc',
+  scope: { version: 1, kind: 'companion-reality' },
+  memoryKind: 'summary',
+  recordedAtPolicy: 'legacy-created-at',
+} as const
 
 function legacyRecord(): string {
   return `${JSON.stringify({
@@ -29,6 +37,29 @@ function legacyRecord(): string {
 }
 
 describe('memory archive maintenance', () => {
+  it('scope-migrates an existing storage-v2/domain-v1 generation without guessing fields', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-scope-only-migration-'))
+    const path = join(root, 'memories.jsonl')
+    await writeFile(path, migrateV1ArchiveBytes(Buffer.from(legacyRecord(), 'utf8'), {
+      now: () => new Date('2026-08-18T00:30:00.000Z'),
+    }))
+
+    expect(inspectArchiveBytes(await readFile(path), {
+      maxArchiveBytes: Number.MAX_SAFE_INTEGER,
+      maxTransactionBytes: Number.MAX_SAFE_INTEGER,
+    }).inspection).toMatchObject({ state: 'scope-migration-required', format: 'v2' })
+    const plan = await planMemoryArchiveMaintenance({
+      path,
+      action: 'migrate-v1',
+      scopeMigration: SCOPE_MIGRATION,
+    })
+    await applyMemoryArchiveMaintenance({ path, token: plan.token, expectedDigest: plan.sourceDigest })
+    const archive = await openMemoryArchive({ path })
+    expect(archive.inspection()).toMatchObject({ state: 'ready', format: 'v2' })
+    expect(archive.recall({ context: PERSONAL_COMPANION_ACCESS, query: '格式迁移' }))
+      .toEqual([expect.objectContaining({ ownerId: 'owner-fixture', memoryKind: 'summary' })])
+  })
+
   it('keeps v1 fail-closed until an exact-digest migration plan is explicitly applied', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-migration-'))
     const path = join(root, 'memories.jsonl')
@@ -36,14 +67,18 @@ describe('memory archive maintenance', () => {
     await writeFile(path, original)
 
     const legacy = await openMemoryArchive({ path })
-    expect(legacy.inspection()).toMatchObject({ state: 'migration-required', format: 'v1', eventCount: 1 })
-    expect(legacy.recall({ query: '格式迁移' })).toEqual([])
-    await expect(legacy.observeExplicit({ sourceMessageId: 'new-source', text: '请记住：不应写入 v1。' }))
-      .rejects.toMatchObject({ code: 'MEMORY_ARCHIVE_MIGRATION_REQUIRED' })
+    expect(legacy.inspection()).toMatchObject({ state: 'scope-migration-required', format: 'v1', eventCount: 1 })
+    expect(legacy.recall({ context: PERSONAL_COMPANION_ACCESS, query: '格式迁移' })).toEqual([])
+    await expect(legacy.observeExplicit({
+      context: PERSONAL_COMPANION_ACCESS, memoryKind: 'summary',
+      sourceMessageId: 'new-source', text: '请记住：不应写入 v1。',
+    }))
+      .rejects.toMatchObject({ code: 'MEMORY_ARCHIVE_SCOPE_MIGRATION_REQUIRED' })
 
     const plan = await planMemoryArchiveMaintenance({
       path,
       action: 'migrate-v1',
+      scopeMigration: SCOPE_MIGRATION,
       now: () => new Date('2026-08-18T01:00:00.000Z'),
       expiresInMs: 60_000,
     })
@@ -70,9 +105,9 @@ describe('memory archive maintenance', () => {
       directoryDurability: process.platform === 'win32' ? 'unsupported-platform' : 'confirmed',
     })
     expect(await readFile(plan.backupPath)).toEqual(original)
-    expect(await inspectMemoryArchive({ path })).toMatchObject({ state: 'ready', format: 'v2', eventCount: 1 })
+    expect(await inspectMemoryArchive({ path })).toMatchObject({ state: 'ready', format: 'v2', eventCount: 2 })
     const migrated = await openMemoryArchive({ path })
-    expect(migrated.recall({ query: '格式迁移' })).toEqual([
+    expect(migrated.recall({ context: PERSONAL_COMPANION_ACCESS, query: '格式迁移' })).toEqual([
       expect.objectContaining({ id: 'legacy-memory-1', sourceMessageId: 'legacy-source-1' }),
     ])
     await expect(rehearseMemoryArchiveRollback({
@@ -84,7 +119,7 @@ describe('memory archive maintenance', () => {
       applicable: true,
       sourceFormat: 'v2',
       backupFormat: 'v1',
-      backupState: 'migration-required',
+      backupState: 'scope-migration-required',
       issueCodes: [],
     })
   })
@@ -94,10 +129,13 @@ describe('memory archive maintenance', () => {
     const path = join(root, 'memories.jsonl')
     const archive = await openMemoryArchive({
       path,
-      createId: () => 'memory-1',
+      createId: (() => { const ids = ['observation-1', 'memory-1']; return () => ids.shift() ?? 'unexpected-id' })(),
       now: () => new Date('2026-08-18T02:00:00.000Z'),
     })
-    await archive.observeExplicit({ sourceMessageId: 'source-1', text: '请记住：中性恢复夹具仍然有效。' })
+    await archive.observeExplicit({
+      context: PERSONAL_COMPANION_ACCESS, memoryKind: 'summary',
+      sourceMessageId: 'source-1', text: '请记住：中性恢复夹具仍然有效。',
+    })
     await appendFile(path, '{"kind":"transaction"', 'utf8')
     const damaged = await readFile(path)
 
@@ -122,7 +160,8 @@ describe('memory archive maintenance', () => {
     expect(result).toMatchObject({ action: 'recover-trailing', state: 'ready' })
     expect(await readFile(plan.backupPath)).toEqual(damaged)
     const recovered = await openMemoryArchive({ path })
-    expect(recovered.recall({ query: '恢复夹具' })).toEqual([expect.objectContaining({ id: 'memory-1' })])
+    expect(recovered.recall({ context: PERSONAL_COMPANION_ACCESS, query: '恢复夹具' }))
+      .toEqual([expect.objectContaining({ id: 'memory-1' })])
 
     await appendFile(path, '{not-json}\n', 'utf8')
     const restore = await planMemoryArchiveMaintenance({ path, action: 'recover-trailing' })
@@ -143,6 +182,7 @@ describe('memory archive maintenance', () => {
     const expired = await planMemoryArchiveMaintenance({
       path,
       action: 'migrate-v1',
+      scopeMigration: SCOPE_MIGRATION,
       now: () => new Date('2026-08-18T03:00:00.000Z'),
       expiresInMs: 1_000,
     })
@@ -155,7 +195,7 @@ describe('memory archive maintenance', () => {
     })).rejects.toThrow('expired')
     expect(await readFile(path)).toEqual(beforeExpired)
 
-    const stale = await planMemoryArchiveMaintenance({ path, action: 'migrate-v1' })
+    const stale = await planMemoryArchiveMaintenance({ path, action: 'migrate-v1', scopeMigration: SCOPE_MIGRATION })
     await appendFile(path, '\n', 'utf8')
     const changed = await readFile(path)
     await expect(applyMemoryArchiveMaintenance({
@@ -173,7 +213,7 @@ describe('memory archive maintenance', () => {
       const path = join(root, 'memories.jsonl')
       const original = Buffer.from(legacyRecord(), 'utf8')
       await writeFile(path, original)
-      const plan = await planMemoryArchiveMaintenance({ path, action: 'migrate-v1' })
+      const plan = await planMemoryArchiveMaintenance({ path, action: 'migrate-v1', scopeMigration: SCOPE_MIGRATION })
 
       await expect(applyMemoryArchiveMaintenance({
         path,
@@ -191,7 +231,7 @@ describe('memory archive maintenance', () => {
         maxTransactionBytes: Number.MAX_SAFE_INTEGER,
       }).inspection
       expect(
-        (structural.state === 'migration-required' && structural.format === 'v1')
+        (structural.state === 'scope-migration-required' && structural.format === 'v1')
         || (structural.state === 'ready' && structural.format === 'v2'),
       ).toBe(true)
     }
@@ -203,7 +243,10 @@ describe('memory archive maintenance', () => {
       const root = await mkdtemp(join(tmpdir(), `mistymoon-memory-recovery-${point}-`))
       const path = join(root, 'memories.jsonl')
       const archive = await openMemoryArchive({ path })
-      await archive.observeExplicit({ sourceMessageId: 'source-1', text: '请记住：中性恢复故障夹具。' })
+      await archive.observeExplicit({
+        context: PERSONAL_COMPANION_ACCESS, memoryKind: 'summary',
+        sourceMessageId: 'source-1', text: '请记住：中性恢复故障夹具。',
+      })
       await appendFile(path, '{"kind":"transaction"', 'utf8')
       const damaged = await readFile(path)
       const plan = await planMemoryArchiveMaintenance({ path, action: 'recover-trailing' })
@@ -236,7 +279,9 @@ describe('memory archive maintenance', () => {
     const backupPath = join(root, 'chosen.backup')
     const original = Buffer.from(legacyRecord(), 'utf8')
     await writeFile(path, original)
-    const plan = await planMemoryArchiveMaintenance({ path, action: 'migrate-v1', backupPath })
+    const plan = await planMemoryArchiveMaintenance({
+      path, action: 'migrate-v1', backupPath, scopeMigration: SCOPE_MIGRATION,
+    })
 
     await expect(applyMemoryArchiveMaintenance({
       path,
@@ -267,11 +312,13 @@ describe('memory archive maintenance', () => {
     await expect(planMemoryArchiveMaintenance({
       path,
       action: 'migrate-v1',
+      scopeMigration: SCOPE_MIGRATION,
       backupRetentionLimit: 2,
     })).rejects.toThrow('retention limit')
     await expect(planMemoryArchiveMaintenance({
       path,
       action: 'migrate-v1',
+      scopeMigration: SCOPE_MIGRATION,
       backupRetentionLimit: 3,
     })).resolves.toMatchObject({ action: 'migrate-v1', backupRequired: true })
   })
@@ -281,7 +328,7 @@ describe('memory archive maintenance', () => {
     const path = join(root, 'memories.jsonl')
     const original = Buffer.from(legacyRecord(), 'utf8')
     await writeFile(path, original)
-    const plan = await planMemoryArchiveMaintenance({ path, action: 'migrate-v1' })
+    const plan = await planMemoryArchiveMaintenance({ path, action: 'migrate-v1', scopeMigration: SCOPE_MIGRATION })
     let release!: () => void
     const held = new Promise<void>(resolve => { release = resolve })
     let entered!: () => void
@@ -312,10 +359,16 @@ describe('memory archive maintenance', () => {
     const tsx = join(process.cwd(), 'node_modules', 'tsx', 'dist', 'cli.mjs')
 
     const inspected = await execFileAsync(process.execPath, [tsx, cli, 'inspect', path], { encoding: 'utf8' })
-    expect(JSON.parse(inspected.stdout)).toMatchObject({ state: 'migration-required', format: 'v1' })
+    expect(JSON.parse(inspected.stdout)).toMatchObject({ state: 'scope-migration-required', format: 'v1' })
     expect(inspected.stdout).not.toContain('中性数据演练')
 
-    const planned = await execFileAsync(process.execPath, [tsx, cli, 'plan-migrate', path], { encoding: 'utf8' })
+    const planned = await execFileAsync(process.execPath, [
+      tsx, cli, 'plan-migrate', path,
+      SCOPE_MIGRATION.ownerId,
+      SCOPE_MIGRATION.authority,
+      JSON.stringify(SCOPE_MIGRATION.scope),
+      SCOPE_MIGRATION.memoryKind,
+    ], { encoding: 'utf8' })
     const plan = JSON.parse(planned.stdout) as MemoryMaintenancePlan
     expect(plan).toMatchObject({ action: 'migrate-v1', backupRequired: true })
     expect(planned.stdout).not.toContain('中性数据演练')

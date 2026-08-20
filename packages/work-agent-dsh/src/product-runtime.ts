@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { resolve } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
+import { resolveSessionPreset } from '@deepseek-ai/dsh-agent-presets'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { ReasoningEffortId, type LlmModelInfo } from '@deepseek-ai/dsh-llm'
 import type { SubagentProvider } from '@deepseek-ai/dsh-subagent'
@@ -44,7 +45,7 @@ export const name = 'mistymoon-work-agent-runtime'
 /** Host-plane registries required before product providers can be published. */
 export const inject = ['subagents', 'agentPresets', 'llm']
 
-export const RP_HOST_PRESET_ID = 'mistymoon-rp-host-v1'
+export const RP_HOST_PRESET_ID = 'mistymoon-rp-host-v2'
 export const WORK_LOGICAL_AGENT_ID = 'mistymoon-work-v1'
 export const FLASH_PROVIDER_NAME = 'mistymoon-work-flash'
 
@@ -99,7 +100,7 @@ function baselineDefinition(routes: readonly WorkRoutePolicyV1[]): SharedBaselin
     modelAllowlist: [...new Set(routes.map(route => route.model))],
     rolePolicies: {
       rpHost: {
-        toolAllow: ['web_search', 'web_fetch', FLASH_PROVIDER_NAME],
+        toolAllow: ['web_search', 'web_fetch', 'read', 'grep', 'glob', FLASH_PROVIDER_NAME],
         toolDeny: ['bash', 'str_replace_editor', 'write', 'edit'],
       },
       workAgent: {
@@ -153,7 +154,7 @@ function eventView(agent: Agent): readonly WorkProfileEventLike[] {
 
 function assertRpHost(agent: Agent): void {
   if ((agent.session.header.delegationDepth ?? 0) !== 0
-    || agent.session.header.agentPreset !== RP_HOST_PRESET_ID) {
+    || resolveSessionPreset(agent.session) !== RP_HOST_PRESET_ID) {
     throw new WorkActivationRoleError()
   }
 }

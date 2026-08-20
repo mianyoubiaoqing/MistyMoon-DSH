@@ -100,10 +100,12 @@ function mappedList<T>(value: unknown, mapper: (item: unknown) => T): readonly T
 
 /** Parse the strict, versioned JSON envelope emitted by a Work child. */
 export function parseWorkReportV1(text: string): WorkReportV1 {
-  if (text.length === 0 || text.length > MAX_REPORT_LENGTH || text.trim() !== text) invalid()
+  if (text.length === 0 || text.length > MAX_REPORT_LENGTH) invalid()
+  const trimmed = text.trim()
+  if (trimmed.length === 0 || trimmed.length > MAX_REPORT_LENGTH) invalid()
   let parsed: unknown
   try {
-    parsed = JSON.parse(text)
+    parsed = JSON.parse(trimmed)
   } catch {
     invalid()
   }
@@ -122,12 +124,32 @@ export function parseWorkReportV1(text: string): WorkReportV1 {
   })
 }
 
+function reportText(result: SubagentResult): string {
+  const textBlocks = result.output.filter(block => block.type === 'text')
+  if (textBlocks.length !== 1) invalid()
+  if (result.output.some(block => block.type !== 'text' && block.type !== 'reasoning')) invalid()
+  return textBlocks[0]!.text
+}
+
+function withoutReasoning(result: SubagentResult): SubagentResult {
+  if (!result.output.some(block => block.type === 'reasoning')) return result
+  return {
+    ...result,
+    output: result.output.filter(block => block.type !== 'reasoning'),
+  }
+}
+
 function validatedResult(result: SubagentResult): SubagentResult {
-  if (result.stopReason !== 'completed') return result
+  const publishable = withoutReasoning(result)
+  if (publishable.stopReason !== 'completed') return publishable
   try {
-    if (result.output.length !== 1 || result.output[0]?.type !== 'text') invalid()
-    const report = parseWorkReportV1(result.output[0].text)
-    return { ...result, structured: report }
+    const text = reportText(publishable)
+    const report = parseWorkReportV1(text)
+    return {
+      ...publishable,
+      output: [{ type: 'text', text }],
+      structured: report,
+    }
   } catch (error) {
     if (!(error instanceof WorkReportValidationError)) throw error
     return {
