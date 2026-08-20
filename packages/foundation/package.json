@@ -1,6 +1,6 @@
 {
   "name": "@mistymoon/dsh-foundation",
-  "version": "0.0.1-rc.5",
+  "version": "0.0.1-rc.6",
   "description": "Private persona projection and publication safety for MistyMoon on DSH",
   "private": true,
   "type": "module",

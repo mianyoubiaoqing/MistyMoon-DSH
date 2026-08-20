@@ -1,6 +1,6 @@
 {
   "name": "@mistymoon/dsh-memory",
-  "version": "0.0.1-rc.5",
+  "version": "0.0.1-rc.6",
   "description": "Durable companion memory for MistyMoon on DSH",
   "private": true,
   "type": "module",
@@ -18,6 +18,30 @@
     "./contracts": {
       "types": "./lib/contracts.d.ts",
       "default": "./lib/contracts.js"
+    },
+    "./candidate-extraction": {
+      "types": "./lib/candidate-extraction.d.ts",
+      "default": "./lib/candidate-extraction.js"
+    },
+    "./conflict": {
+      "types": "./lib/conflict.d.ts",
+      "default": "./lib/conflict.js"
+    },
+    "./retrieval": {
+      "types": "./lib/retrieval.d.ts",
+      "default": "./lib/retrieval.js"
+    },
+    "./advanced-retrieval": {
+      "types": "./lib/advanced-retrieval.d.ts",
+      "default": "./lib/advanced-retrieval.js"
+    },
+    "./lifecycle": {
+      "types": "./lib/lifecycle.d.ts",
+      "default": "./lib/lifecycle.js"
+    },
+    "./domain": {
+      "types": "./lib/domain.d.ts",
+      "default": "./lib/domain.js"
     },
     "./legacy-migration": {
       "types": "./lib/legacy-migration.d.ts",

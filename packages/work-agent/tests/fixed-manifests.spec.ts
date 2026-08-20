@@ -22,7 +22,7 @@ describe('fixed Work preset manifests', () => {
         requiredCapabilities: [],
         preset: expect.objectContaining({
           id: 'anchored-standard',
-          nativePresetId: 'mistymoon-work-anchored-standard-v1',
+          nativePresetId: 'mistymoon-work-anchored-standard-v2',
           upstreams: [
             {
               project: 'anchored-standard',

@@ -10,6 +10,7 @@ import ToolRuntime, { type ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import * as IdentityPlugin from '@mistymoon/dsh-identity'
 import { describe, expect, it } from 'vitest'
 import * as MemoryPlugin from '../src/index.js'
+import { PERSONAL_COMPANION_ACCESS } from './fixtures.js'
 
 const signal = new AbortController().signal
 const DENIED_TOOL_CASES = [
@@ -84,15 +85,21 @@ describe('MistyMoon memory tools', () => {
 
     expect(result.isError).toBe(true)
     expect(JSON.stringify(result.content)).toContain('authenticated Owner request')
-    expect(ctx.mistymoonMemory.list()).toEqual([])
-    expect(ctx.mistymoonMemory.listCandidates()).toEqual([])
+    expect(ctx.mistymoonMemory.list({ context: PERSONAL_COMPANION_ACCESS })).toEqual([])
+    expect(ctx.mistymoonMemory.listCandidates({ context: PERSONAL_COMPANION_ACCESS })).toEqual([])
   })
 
   it('lets the owner list, replace, and forget memories through DSH tools', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-tools-'))
     const path = join(root, 'memories.jsonl')
-    const archive = await MemoryPlugin.openMemoryArchive({ path, createId: () => 'memory-1' })
-    await archive.observeExplicit({ sourceMessageId: 'message-1', text: '请记住：我喜欢红茶。' })
+    const ids = ['observation-1', 'memory-1']
+    const archive = await MemoryPlugin.openMemoryArchive({ path, createId: () => ids.shift() ?? 'unexpected-id' })
+    await archive.observeExplicit({
+      context: PERSONAL_COMPANION_ACCESS,
+      memoryKind: 'preference',
+      sourceMessageId: 'message-1',
+      text: '请记住：我喜欢红茶。',
+    })
     const ctx = new Context()
     await ctx.plugin(SystemPrompt)
     await ctx.plugin(AgentRegistry)

@@ -103,7 +103,7 @@ describe('real DSH Agent Loop with the two-phase profile delivery coordinator', 
     const adapter = new ScriptedAdapter([textResponse('direct RP Host reply')])
     const { ctx } = await loopHarness(adapter, { foundation: true })
     const agent = ctx.agentLoop.create(SessionId('rp-host-selected-after-creation'), { provider: 'mock', model: 'mock' })
-    agent.session.append('agent-preset/selected', { agentPreset: 'mistymoon-rp-host-v1' })
+    agent.session.append('agent-preset/selected', { agentPreset: 'mistymoon-rp-host-v2' })
 
     send(agent, 'RP Host owner message.')
     await waitForIdle(ctx, agent)

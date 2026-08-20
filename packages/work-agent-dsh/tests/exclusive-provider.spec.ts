@@ -22,7 +22,7 @@ function parent(id: string, delegationDepth = 0, cwd = resolve('fixture-workspac
     createdAt: 1,
     ...(delegationDepth === 0 ? {} : { origin: 'subagent' as const }),
     delegationDepth,
-    agentPreset: delegationDepth === 0 ? 'mistymoon-rp-host-v1' : 'mistymoon-work-anchored-standard-v1',
+    agentPreset: delegationDepth === 0 ? 'mistymoon-rp-host-v2' : 'mistymoon-work-anchored-standard-v2',
     cwd,
   })
   return { id: SessionId(id), session } as unknown as Agent
@@ -67,7 +67,7 @@ describe('exclusive Work activation provider', () => {
     }
     const provider = createExclusiveWorkPresetProvider({
       name: 'mistymoon-work-fixture',
-      expectedParentPreset: 'mistymoon-rp-host-v1',
+      expectedParentPreset: 'mistymoon-rp-host-v2',
       resolveProvider: () => delegate,
     })
     const firstParent = parent('parent-1')
@@ -107,7 +107,7 @@ describe('exclusive Work activation provider', () => {
     const gate = new WorkActivationGate()
     const make = (name: string) => createExclusiveWorkPresetProvider({
       name,
-      expectedParentPreset: 'mistymoon-rp-host-v1',
+      expectedParentPreset: 'mistymoon-rp-host-v2',
       gate,
       resolveProvider: () => delegate,
     })
@@ -137,7 +137,7 @@ describe('exclusive Work activation provider', () => {
     const gate = new WorkActivationGate()
     const provider = createExclusiveWorkPresetProvider({
       name: 'mistymoon-work-workspace',
-      expectedParentPreset: 'mistymoon-rp-host-v1',
+      expectedParentPreset: 'mistymoon-rp-host-v2',
       gate,
       leaseKey: request => request.parent.session.header.cwd!.toLowerCase(),
       resolveProvider: () => delegate,

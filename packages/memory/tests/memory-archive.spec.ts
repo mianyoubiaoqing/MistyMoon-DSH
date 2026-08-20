@@ -2,7 +2,55 @@ import { appendFile, mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { openMemoryArchive } from '../src/index.js'
+import {
+  openMemoryArchive as openRawMemoryArchive,
+  type CompanionMemoryArchive,
+  type ExplicitMemoryObservation,
+  type MemoryCandidateDecision,
+  type MemoryCandidateList,
+  type MemoryCandidateProposal,
+  type MemoryForget,
+  type MemoryList,
+  type MemoryRecall,
+  type MemoryReplace,
+  type OpenMemoryArchiveOptions,
+} from '../src/index.js'
+
+const access = {
+  version: 1,
+  ownerId: 'owner-fixture',
+  authority: 'local-dsh-host-rpc',
+  scope: { version: 1, kind: 'companion-reality' },
+  channelDisclosure: 'owner-confidential',
+  requestIntent: 'explicit-confidential-recall',
+} as const
+
+type WithoutContext<T extends { context: unknown }> = Omit<T, 'context'>
+
+function withTestAccess(archive: CompanionMemoryArchive) {
+  return {
+    inspection: () => archive.inspection(),
+    dispose: () => archive.dispose(),
+    observeExplicit: (input: Omit<WithoutContext<ExplicitMemoryObservation>, 'memoryKind'>) =>
+      archive.observeExplicit({ ...input, context: access, memoryKind: 'summary' }),
+    recall: (input: WithoutContext<MemoryRecall>) => archive.recall({ ...input, context: access }),
+    list: (input: WithoutContext<MemoryList> = {}) => archive.list({ ...input, context: access }),
+    forget: (input: WithoutContext<MemoryForget>) => archive.forget({ ...input, context: access }),
+    replace: (input: WithoutContext<MemoryReplace>) => archive.replace({ ...input, context: access }),
+    propose: (input: Omit<WithoutContext<MemoryCandidateProposal>, 'memoryKind'>) =>
+      archive.propose({ ...input, context: access, memoryKind: 'summary' }),
+    listCandidates: (input: WithoutContext<MemoryCandidateList> = {}) =>
+      archive.listCandidates({ ...input, context: access }),
+    approveCandidate: (input: WithoutContext<MemoryCandidateDecision>) =>
+      archive.approveCandidate({ ...input, context: access }),
+    rejectCandidate: (input: WithoutContext<MemoryCandidateDecision>) =>
+      archive.rejectCandidate({ ...input, context: access }),
+  }
+}
+
+async function openMemoryArchive(options: OpenMemoryArchiveOptions) {
+  return withTestAccess(await openRawMemoryArchive(options))
+}
 
 describe('companion memory archive', () => {
   it('serializes same-source writes across archive instances without corrupting restart', async () => {
@@ -10,12 +58,12 @@ describe('companion memory archive', () => {
     const path = join(root, 'memory.jsonl')
     const first = await openMemoryArchive({
       path,
-      createId: () => 'memory-from-first',
+      createId: (() => { let sequence = 0; return () => `first-${sequence++}` })(),
       now: () => new Date('2026-08-18T10:00:00.000Z'),
     })
     const second = await openMemoryArchive({
       path,
-      createId: () => 'memory-from-second',
+      createId: (() => { let sequence = 0; return () => `second-${sequence++}` })(),
       now: () => new Date('2026-08-18T10:00:01.000Z'),
     })
 
@@ -53,7 +101,7 @@ describe('companion memory archive', () => {
 
     const reopened = await openMemoryArchive({ path })
     expect(reopened.list({ limit: 200 })).toHaveLength(100)
-    expect(reopened.inspection()).toMatchObject({ state: 'ready', transactionCount: 100, eventCount: 100 })
+    expect(reopened.inspection()).toMatchObject({ state: 'ready', transactionCount: 100, eventCount: 200 })
   })
 
   it('deduplicates explicit memories by source message and recalls them after restart', async () => {
@@ -61,7 +109,7 @@ describe('companion memory archive', () => {
     const path = join(root, 'memory.jsonl')
     const first = await openMemoryArchive({
       path,
-      createId: () => 'memory-1',
+      createId: (() => { const ids = ['observation-1', 'memory-1']; return () => ids.shift() ?? 'unexpected-id' })(),
       now: () => new Date('2026-08-14T10:00:00.000Z'),
     })
 
@@ -93,7 +141,7 @@ describe('companion memory archive', () => {
     const archive = await openMemoryArchive({
       path,
       createId: (() => {
-        const ids = ['memory-1', 'event-1']
+        const ids = ['observation-1', 'memory-1', 'observation-2', 'event-1']
         return () => ids.shift() ?? 'unexpected-id'
       })(),
       now: () => new Date('2026-08-14T10:00:00.000Z'),
@@ -113,7 +161,7 @@ describe('companion memory archive', () => {
   it('replaces a memory atomically and recalls only the current value after restart', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-replace-'))
     const path = join(root, 'memory.jsonl')
-    const ids = ['memory-1', 'memory-2']
+    const ids = ['observation-1', 'memory-1', 'observation-2', 'memory-2']
     const archive = await openMemoryArchive({
       path,
       createId: () => ids.shift() ?? 'unexpected-id',
@@ -147,7 +195,7 @@ describe('companion memory archive', () => {
   it('keeps proposed memories out of recall until the owner approves them', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-candidate-'))
     const path = join(root, 'memory.jsonl')
-    const ids = ['candidate-1', 'memory-1', 'event-1']
+    const ids = ['observation-1', 'candidate-1', 'observation-2', 'memory-1', 'event-1']
     const archive = await openMemoryArchive({
       path,
       createId: () => ids.shift() ?? 'unexpected-id',
@@ -187,7 +235,7 @@ describe('companion memory archive', () => {
   it('quarantines a partial approval transaction without applying any approval event', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-partial-approval-'))
     const path = join(root, 'memory.jsonl')
-    const ids = ['candidate-1', 'memory-1', 'resolution-1']
+    const ids = ['observation-1', 'candidate-1', 'observation-2', 'memory-1', 'resolution-1']
     const archive = await openMemoryArchive({
       path,
       createId: () => ids.shift() ?? 'unexpected-id',
@@ -224,7 +272,7 @@ describe('companion memory archive', () => {
     for (const testCase of cases) {
       const root = await mkdtemp(join(tmpdir(), `mistymoon-memory-${testCase.suffix}-`))
       const path = join(root, 'memory.jsonl')
-      const ids = ['memory-1', 'transaction-1']
+      const ids = ['observation-1', 'memory-1']
       const archive = await openMemoryArchive({
         path,
         createId: () => ids.shift() ?? 'unexpected-id',
@@ -247,7 +295,7 @@ describe('companion memory archive', () => {
   it('detects removal of a complete trailing transaction through its durability checkpoint', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-truncated-transaction-'))
     const path = join(root, 'memory.jsonl')
-    const ids = ['memory-1', 'memory-2']
+    const ids = ['observation-1', 'memory-1', 'observation-2', 'memory-2']
     const archive = await openMemoryArchive({
       path,
       createId: () => ids.shift() ?? 'unexpected-id',
@@ -281,7 +329,7 @@ describe('companion memory archive', () => {
   it('retains rejected candidates for audit without making them recallable', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-rejected-candidate-'))
     const path = join(root, 'memory.jsonl')
-    const ids = ['candidate-1', 'event-1']
+    const ids = ['observation-1', 'candidate-1', 'observation-2', 'event-1']
     const archive = await openMemoryArchive({
       path,
       createId: () => ids.shift() ?? 'unexpected-id',

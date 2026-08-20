@@ -56,7 +56,7 @@ DSH Agent / Session / Permission / Tools
 
 DSH 会话日志保存原始交互和实际送入模型的人格、记忆投影。MistyMoon 私有目录保存跨会话的活动人格、长期事实、候选与设置。索引可以重建，来源记录和审计历史不能依赖索引反推。
 
-`packages/work-agent` 是位于运行时插件图之外的纯合同包：只拥有不可变 Shared Baseline、固定 Work Preset/route 解析、Compatibility Gate 和版本化 `WorkReportV1`，不读取 Foundation Persona 或 Memory，不被 Settings UI 复制业务规则，也不依赖 DSH 运行时。`packages/work-agent-dsh` 是唯一接触 DSH lifecycle 的 Adapter；它通过公开的 `agents.create()`、`agentPresets.mount()` 和 child depth/options helpers 创建 fresh depth-one child，并把 baseline/manifest/route 重校验接到同步 publication commit。其 fixed-preset provider 保留 DSH descriptor、delegated policy、取消、结果折叠与 dispose 语义，但不支持 fork/continuable 或 per-request composition；产品 wrapper 在消费边界严格校验单 block JSON Work Report，畸形 completed 输出 fail closed。标准 `parentSession` 与 one-shot descriptor 让 rc.7 原生目录可发现 child；Owner 通过 exact-address `openSubagent()` 打开 DSH 持久化的只读过程，不经过 MistyMoon 自建 transcript API。它由 bundle 加载，但不拥有 DSH 源码、Profile、provider 凭据或安装目录。
+`packages/work-agent` 是位于运行时插件图之外的纯合同包：只拥有不可变 Shared Baseline、固定 Work Preset/route 解析、Compatibility Gate 和版本化 `WorkReportV1`，不读取 Foundation Persona 或 Memory，不被 Settings UI 复制业务规则，也不依赖 DSH 运行时。`packages/work-agent-dsh` 是唯一接触 DSH lifecycle 的 Adapter；它通过公开的 `agents.create()`、`agentPresets.mount()` 和 child depth/options helpers 创建 fresh depth-one child，并把 baseline/manifest/route 重校验接到同步 publication commit。其 fixed-preset provider 保留 DSH descriptor、delegated policy、取消、结果折叠与 dispose 语义，但不支持 fork/continuable 或 per-request composition；产品 wrapper 在消费边界严格校验单 text-block JSON Work Report，畸形 completed 输出 fail closed，并在 completed/partial 父级结果交付前丢弃全部 reasoning blocks。标准 `parentSession` 与 one-shot descriptor 让 rc.7 原生目录可发现 child；Owner 通过 exact-address `openSubagent()` 打开 DSH 持久化的只读过程，不经过 MistyMoon 自建 transcript API。它由 bundle 加载，但不拥有 DSH 源码、Profile、provider 凭据或安装目录。
 
 ## Identity
 
@@ -68,7 +68,9 @@ Foundation 只通过 `ownerMessages()` 选择可投影 Persona 的输入，并�
 
 Foundation 管理版本化活动人格 `persona.json`、未发布的 `draft.json` 和 `versions/` 回滚历史。首次运行只从中性模板创建活动文件，升级不得覆盖用户版本。设置页保存只更新草稿；发布会先归档当前活动版本，并在草稿所基于的活动人格未被其他进程改变时原子替换活动文件。
 
-Foundation 不为通用 preset 注册常驻人格 system section，也不在普通 assistant/tool step 重复投影 Persona。通用 preset 的 `PersonaTurnDeliveryCoordinator` 继续拥有互斥双阶段画像：每个启用 RP 的真实 owner turn 在真实 owner message 落盘后、首次 provider request 前，通过 `agent/pre-step` 决策追加一条受 `turnVoiceMaxChars` 预算约束的 `mistymoon:turn-voice` output-presentation profile；模型完成全部工作后，以唯一 tool call 调用 `mistymoon_prepare_final_reply`，再原子切换到一次无工具的 `mistymoon:final-voice-refresh`。RP Host preset 是唯一例外：preset-scoped `RP Host Composition` 把完整已发布 Persona 放入唯一 `deployment:persona`，固定 `deepseek-v4-flash/high`，隐藏 final-reply 并直接结束 Owner turn；它不生成 turn-voice/final-voice-refresh。两条路径都由 DSH request/header 记录模型实际所见文本。
+Foundation 不为通用 preset 注册常驻人格 system section，也不在普通 assistant/tool step 重复投影 Persona。通用 preset 的 `PersonaTurnDeliveryCoordinator` 继续拥有互斥双阶段画像：每个启用 RP 的真实 owner turn 在真实 owner message 落盘后、首次 provider request 前，通过 `agent/pre-step` 决策追加一条受 `turnVoiceMaxChars` 预算约束的 `mistymoon:turn-voice` output-presentation profile；模型完成全部工作后，以唯一 tool call 调用 `mistymoon_prepare_final_reply`，再原子切换到一次无工具的 `mistymoon:final-voice-refresh`。RP Host preset 是唯一例外：preset-scoped `RP Host Composition` 把完整已发布 Persona 放入唯一 `deployment:persona`，使其成为 RP Host 的模型可见运行时身份，精确隐藏 `harness:identity` 与 final-reply 并直接结束 Owner turn；它不覆盖模型选择，会话沿用 DSH Web UI/Agent 当前选定的 provider/model 路由，也不生成 turn-voice/final-voice-refresh。两条路径都由 DSH request/header 记录模型实际所见文本。
+
+RP Host Composition 只通过 DSH 公开的 scoped tool restriction 和 preset composition seam 生效；识别失败即拒绝加载，不扫描 Cordis Context 的 Symbol 或宿主私有 shape。其 model-facing catalog 与 monotonic execution guard 每次组装都收敛到封闭能力面，本地 `read` / `grep` / `glob` 还要通过真实路径工作区边界。prompt policy 与 capability 分离：安全、权限、审批、协作模式、外部副作用及未知 section 全部保留；rc.7 尚无“可过滤工具帮助”标记，所以当前不按 `tool:*` / `tools:*` 名称删除任何工具说明。
 
 模型跳过 prepare、prepare 与其他工具并列、`off`、persona 读取失败、Code Mode/嵌套调用或无法证明下一请求工具为空时，Coordinator fail closed：不排队 refresh、不安装 gate、不事后改写，短对话由初始 profile best-effort 完成。限制与 voice 都从 durable tool/result meta、`user/message`、assistant、surface replacement 和 inbox splice 重建；prepare 已记录且 initial 已 neutralized 而 final 未完成的进程重启会恢复空工具 gate，歧义时 fail closed 保留 DSH 普通工具能力，不用 step/token/自然语言猜测 finality。
 
@@ -91,13 +93,19 @@ Character Card 导入由 Host 解析 V1/V2/V3 JSON、PNG/APNG `tEXt` 块和 CHAR
 
 ## Memory
 
-Memory 使用 v2 事务式 JSONL 档案：新事实、纠正、遗忘和审核决定都是不可变 domain events，一个逻辑 mutation 只占一条 hash-linked transaction。活动视图由完整事务重放得到；纠正不改写旧值，遗忘记录保留审计但不再召回。生产 writer 通过跨进程 lease 在写前重读，文件 append 与 fsync 成功后更新相邻 durability checkpoint，最后才发布进程内 snapshot。
+Memory 使用 v2 事务式 JSONL 档案：每个新 candidate/record 都属于明确 Owner 和严格 `MemoryScopeV1`，引用同一逻辑事务中的不可变 Observation，并携带 memory kind、recordedAt 与可选有效区间。来源幂等键由 Owner、authority、exact scope、source kind 和 source id 共同组成；Companion Reality、Character Scene 与 Campaign Branch 不自动复制或混召回。新事实、纠正、遗忘和审核决定都是不可变 domain events，一个逻辑 mutation 只占一条 hash-linked transaction。活动视图由完整事务重放得到；纠正不改写旧值，遗忘记录保留审计但不再召回。生产 writer 通过跨进程 lease 在写前重读，文件 append 与 fsync 成功后更新相邻 durability checkpoint，最后才发布进程内 snapshot。
 
-v1 档案不会自动升级，而以 `migration-required` fail closed；非法 JSON、摘要链、领域状态或 checkpoint 进入 `quarantined`。写入使用跨进程 file lease，lease 内重读；append、fsync、重放、checkpoint 与 release 全部完成后才发布内存 snapshot，timeout、compromise 或 release failure 均显式失败。本机 maintenance seam 使用 inspect/plan/apply 两步协议，绑定 exact digest、过期 token 和 exact backup；只允许迁移有效 v1 或裁剪最后完整事务之后的 partial tail，内部损坏只生成 `restore-required`，并提供只读 rollback rehearsal。自动命名 backup 达到保留上限时拒绝继续创建，不自动删除。Windows 采用 Owner 已接受的文件 fsync + atomic rename + reopen 契约；Node 不支持目录 fsync，因此报告相应的断电窗口而不虚构更强 durability。
+旧 domain schema v1（无论是原始 storage v1 还是已包进 storage v2）以 `scope-migration-required` fail closed。Maintenance plan 必须显式绑定 Owner、authority、目标 scope、默认 kind、`legacy-created-at` 策略、exact digest、过期 token 和 exact backup，apply 才会一次性生成 Observation 与 scoped domain v2；正文不参与字段推断。非法 JSON、摘要链、领域状态或 checkpoint 进入 `quarantined`。尾部恢复仍只允许裁剪最后完整事务之后的 partial tail，内部损坏只生成 `restore-required`，并提供只读 rollback rehearsal。自动命名 backup 达到保留上限时拒绝继续创建，不自动删除。Windows 采用 Owner 已接受的文件 fsync + atomic rename + reopen 契约；Node 不支持目录 fsync，因此报告相应的断电窗口而不虚构更强 durability。
 
-自动召回挂在 `agent/pre-step`，由 MistyMoon 根据当前会话和所有者范围选择正式记忆，再以带来源的 DSH 消息写入会话。模型不需要记得主动调用工具，工具也不能绕过审核状态直接读取底层档案。
+自动召回挂在 `agent/pre-step`，由 MistyMoon 从 Owner Eligibility 构造可信 access context，先按 confirmed、Owner、authority、exact scope、有效时间、summary source lineage、Recall Tier 与 confidential 双门做硬过滤，再交给本地 BM25 排序，并把带 memory/source/provider receipt 的结果作为 DSH 消息写入会话。工具参数不包含 Owner、scope 或 disclosure override；Settings UI 只消费 Memory 提供的 loopback governance service，不读取档案或复制过滤规则。
 
-长期方向是定义稳定的 `MemoryProvider` 接口：
+候选抽取、冲突评估和候选编辑/合并都停在 Memory 治理层：抽取 Provider 只接收顶层 Owner 已选择 evidence，输出严格 pending draft；冲突 evaluator 只产生解释，Owner 决策后才原子写入 replacement/tombstone；专用管理页通过 context-free loopback facade 完成搜索、筛选、来源查看、批量审核和无正文审计。Provider 失败不能使 Owner turn 失败或绕过 candidate review。
+
+Retrieval Engine 只向索引 Provider 提供已经硬过滤的最小 record projection，Provider 只返回 ID/score/reason，正文必须回查 Archive。内置 BM25 始终是 baseline；PageIndex 与 graph Adapter 注册后仍为 disabled，本地 shadow 只产生无正文比较，opt-in 必须 Owner 确认，remote boundary 在 RC.6 fail closed。每个请求在最终融合后应用字符/数量预算及 lifecycle rank multiplier。
+
+Memory Lifecycle 先返回进程内不可变 Plan，Owner 明确确认后才追加一个 consolidation/decay/archive/restore 事务。Consolidated Summary 保存扁平叶子 `sourceMemoryIds`，来源 forgotten、superseded、过期或不可回查时自动退出召回；decay 只改变 cold tier 与排序权重，并排除 boundary、commitment、state；archive 保留 confirmed 事实与审计，restore 可恢复。Derived View Provider 在提交后只收到受影响 ID，失败或超时仅返回 stale receipt，Archive 回查仍是权威。
+
+当前已把外部能力拆成稳定、窄化的 Candidate Extraction、Retrieval、Advanced Retrieval 与 Derived View invalidation seam：
 
 ```text
 MistyMoon 治理层
@@ -110,7 +118,7 @@ MistyMoon 治理层
    └─ Mem0（候选，独立服务）
 ```
 
-Provider 可以负责持久化、全文检索、图检索和排序，但不能拥有产品级身份或审核策略。切换 Provider 必须保持相同的规范化事实、来源、可见性和修订语义。
+外部 Provider 可以负责候选抽取或可重建的全文/图检索与排序，但不能拥有 Archive 持久化、产品级身份、审核、事实状态或删除策略。切换 Provider 必须保持相同的规范化事实、来源、可见性、修订与生命周期语义。
 
 ## Noema 决策
 
@@ -126,7 +134,7 @@ Noema 内核仓库在审计固定点缺少独立许可证文件，尽管其 Carg
 
 ## RP Agent 与规划中的体验模式
 
-当前套件已携带 `mistymoon-rp-host-v1` 与 Flash-only Work provider，rc.7 仍要求 Owner-confirmed preset provision。拓扑使用一个 Owner-facing `RP Host Agent` 和 fresh one-shot `Work Agent`：前者负责 RP、澄清、确认、只读 Web、委派与最终交付，后者执行编码、研究、审查或规则分析。第一版禁止 fork，不复制父会话中的人格、关系记忆和 RP 历史。Owner 可在设置页从 DSH live catalog 选择后续 Work child 模型；OpenCode Go 只是一个尚未独立资格化的 experimental exact pair，默认仍是已资格化 direct Flash。
+当前套件已携带 `mistymoon-rp-host-v2` 与 Flash-only Work provider。项目不再通过 npm registry 向最终用户分发；完成 P0 和 P1（桌面跑团模式除外）后，目标发行物是预装套件的 DSH Desktop。installer 仍把 DSH Profile add、RP Host preset 与 Anchored Work preset 的 provision 合成一次可预览/确认的补偿事务，但只作为 Desktop 构建、开发预览和内部更新/回滚 seam：前者仍由 DSH Profile manager 拥有，后者仍只向独立 DSH Home 的 `.agent-presets/<versioned-id>` 原子发布，运行期插件不会自修改安装目录。版本化 bundle 缓存、两个 preset ID/指纹和单代 previous 指针记录在 installer-owned `mistymoon/install-state.json`；私有 Persona、Memory、凭据、会话和日志不进入应用包。拓扑使用一个 Owner-facing `RP Host Agent` 和 fresh one-shot `Work Agent`：前者负责 RP、澄清、确认、只读 Web/工作区文件检查、委派与最终交付，后者执行编码、研究、审查或规则分析。RP Host 的组装提示词以 Persona 为身份并隐藏 harness identity，同时保留安全、权限、沙箱、审批、协作模式和未知工具治理 section；真实工具面由封闭 catalog 与执行 guard 强制。第一版禁止 fork，不复制父会话中的人格、关系记忆和 RP 历史。Owner 可在设置页从 DSH live catalog 选择后续 Work child 模型；OpenCode Go 只是一个尚未独立资格化的 experimental exact pair，默认仍是已资格化 direct Flash。分发边界见 `docs/adr/0002-desktop-bundled-distribution.md`。
 
 委派边界由一个代码级 deep module 强制，而不是 prompt 自律：preset/depth Role Gate 强制星型拓扑；child 工具白名单排除 subagent control、Memory 和 final-reply；共享 workspace lease 跨 RP Host Session 串行并保持到 `dispose()`；fresh Session 与 `inheritsParentContext=false` 隔离父 transcript；child 不含 send/list/read-other-output 通道。MistyMoon v1 不引入通用角色池或多层调度器，仅保留这些可验证约束。
 

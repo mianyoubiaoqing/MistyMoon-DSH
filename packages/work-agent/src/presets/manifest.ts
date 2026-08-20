@@ -47,7 +47,7 @@ function fixedManifest(
   const definition = {
     version: 1,
     id,
-    nativePresetId: `mistymoon-work-${id}-v1`,
+    nativePresetId: `mistymoon-work-${id}-v2`,
     upstreams,
     dshCompatibility: DSH_COMPATIBILITY,
     compatibilityPatchVersion: 'mistymoon-work-policy-shield-v2',

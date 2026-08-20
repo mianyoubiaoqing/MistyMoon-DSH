@@ -55,7 +55,7 @@ credential, or parent transcript.
 
 `RpWorkDelegationRuntime` is the product-plane deep module. It publishes the
 qualified Flash/max foreground adapter, accepts only a top-level
-`mistymoon-rp-host-v1`, folds the Owner-governed profile revision, and shares a
+`mistymoon-rp-host-v2`, folds the Owner-governed profile revision, and shares a
 workspace-keyed lease across both routes and all RP Host Sessions. A lease is
 held through `dispose()`, so two activations cannot write the same workspace in
 parallel. Child tools exclude Memory, final-reply, delegation/control,
@@ -67,9 +67,11 @@ task, accepts exactly one text block with no Markdown wrapper, rejects unknown
 fields and bounded-field violations, and exposes the validated report through
 `SubagentResult.structured`. A completed child with malformed output is changed
 to `stopReason: error` with a neutral diagnostic; aborted, failed, refused, and
-max-token partial output is never parsed or promoted to a report. This boundary
-does not copy the child transcript and does not make Work facts available to
-Persona or Memory.
+max-token partial output is never parsed or promoted to a report. DSH reasoning
+blocks may accompany the single report block internally, but the consumption
+boundary removes every reasoning block from completed and partial results before
+they can be delivered to the RP Host. This boundary does not copy the child
+transcript and does not make Work facts available to Persona or Memory.
 
 The package is exported and loaded by `cordis.patch.yml` for the Owner-approved
 Flash-only launch after Flash/max passed 15/15. Pro/max was paused after 3/15

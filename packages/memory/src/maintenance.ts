@@ -4,11 +4,13 @@ import { basename, dirname, resolve } from 'node:path'
 import {
   inspectArchiveBytes,
   MemoryArchiveStorage,
-  migrateV1ArchiveBytes,
+  migrateLegacyArchiveToScopedBytes,
   verifyArchiveCheckpoint,
   writeArchiveCheckpoint,
   type ArchiveInspection,
+  type LegacyScopeMigrationPolicy,
 } from './storage/index.js'
+import { parseMemoryKind, parseMemoryScopeV1 } from './domain.js'
 
 const DEFAULT_MAX_ARCHIVE_BYTES = 64 * 1024 * 1024
 const DEFAULT_MAX_TRANSACTION_BYTES = 1024 * 1024
@@ -31,6 +33,8 @@ export interface PlanMemoryArchiveMaintenanceOptions extends InspectMemoryArchiv
   expiresInMs?: number
   /** Maximum generated backups retained beside one archive; existing files are never deleted automatically. */
   backupRetentionLimit?: number
+  /** Required explicit assignments for legacy domain events; content is never inspected to infer these values. */
+  scopeMigration?: LegacyScopeMigrationPolicy
 }
 
 export interface ApplicableMemoryMaintenancePlan {
@@ -45,6 +49,7 @@ export interface ApplicableMemoryMaintenancePlan {
   lastValidOffset: number
   expiresAt: string
   token: string
+  scopeMigration?: LegacyScopeMigrationPolicy
 }
 
 /** Content-free advisory for corruption that cannot be safely truncated or skipped. */
@@ -121,6 +126,7 @@ interface MaintenanceTokenPayload {
   backupPath: string
   lastValidOffset: number
   expiresAt: string
+  scopeMigration?: LegacyScopeMigrationPolicy
 }
 
 function sha256(bytes: Buffer | string): string {
@@ -130,6 +136,29 @@ function sha256(bytes: Buffer | string): string {
 function encodeToken(payload: MaintenanceTokenPayload): string {
   const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')
   return `${encoded}.${sha256(encoded)}`
+}
+
+function scopeMigrationPolicy(value: unknown): LegacyScopeMigrationPolicy {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('memory scope migration policy is invalid')
+  }
+  const input = value as Record<string, unknown>
+  const keys = Object.keys(input).toSorted()
+  if (keys.join(',') !== ['authority', 'memoryKind', 'ownerId', 'recordedAtPolicy', 'scope'].toSorted().join(',')) {
+    throw new Error('memory scope migration policy is invalid')
+  }
+  if (typeof input.ownerId !== 'string' || input.ownerId.trim() === ''
+    || typeof input.authority !== 'string' || input.authority.trim() === ''
+    || input.recordedAtPolicy !== 'legacy-created-at') {
+    throw new Error('memory scope migration policy is invalid')
+  }
+  return {
+    ownerId: input.ownerId,
+    authority: input.authority,
+    scope: parseMemoryScopeV1(input.scope),
+    memoryKind: parseMemoryKind(input.memoryKind),
+    recordedAtPolicy: 'legacy-created-at',
+  }
 }
 
 function decodeToken(token: string): MaintenanceTokenPayload {
@@ -159,6 +188,7 @@ function decodeToken(token: string): MaintenanceTokenPayload {
     backupPath: payload.backupPath,
     lastValidOffset: payload.lastValidOffset,
     expiresAt: payload.expiresAt,
+    ...(payload.scopeMigration === undefined ? {} : { scopeMigration: scopeMigrationPolicy(payload.scopeMigration) }),
   }
 }
 
@@ -210,7 +240,7 @@ export async function rehearseMemoryArchiveRollback(
   const backup = inspectBytes(await readBytes(backupPath), options)
   const issueCodes: MemoryArchiveRollbackRehearsal['issueCodes'] = []
   if (source.format !== 'v2') issueCodes.push('source-not-v2')
-  if (backup.state !== 'migration-required' || backup.format !== 'v1') issueCodes.push('backup-not-valid-v1')
+  if (backup.state !== 'scope-migration-required' || backup.format !== 'v1') issueCodes.push('backup-not-valid-v1')
   if (backup.digest !== options.expectedBackupDigest) issueCodes.push('backup-digest-mismatch')
   return {
     schemaVersion: 1,
@@ -242,9 +272,11 @@ export async function planMemoryArchiveMaintenance(
   const bytes = await readBytes(sourcePath)
   const inspection = inspectBytes(bytes, options)
   if (options.action === 'migrate-v1') {
-    if (inspection.state !== 'migration-required' || inspection.format !== 'v1') {
-      throw new Error('memory migration plan requires a valid v1 archive')
+    if (inspection.state !== 'scope-migration-required') {
+      throw new Error('memory migration plan requires a valid legacy-domain archive')
     }
+    if (options.scopeMigration === undefined) throw new Error('memory scope migration policy is required')
+    options.scopeMigration = scopeMigrationPolicy(options.scopeMigration)
   } else if (inspection.state !== 'quarantined') {
     throw new Error('memory recovery plan requires a quarantined archive')
   } else if (inspection.issues.length !== 1
@@ -277,6 +309,7 @@ export async function planMemoryArchiveMaintenance(
     backupPath,
     lastValidOffset: inspection.lastValidOffset,
     expiresAt,
+    ...(options.action === 'migrate-v1' ? { scopeMigration: options.scopeMigration } : {}),
   }
   return {
     ...payload,
@@ -346,8 +379,8 @@ export async function applyMemoryArchiveMaintenance(
       const inspection = inspectArchiveBytes(bytes, limits).inspection
       if (inspection.digest !== payload.sourceDigest) throw new Error('memory archive changed after maintenance planning')
       if (payload.action === 'migrate-v1'
-        && (inspection.state !== 'migration-required' || inspection.format !== 'v1')) {
-        throw new Error('memory archive no longer requires v1 migration')
+        && inspection.state !== 'scope-migration-required') {
+        throw new Error('memory archive no longer requires scoped-record migration')
       }
       if (payload.action === 'recover-trailing'
         && (inspection.state !== 'quarantined' || inspection.issues.length !== 1
@@ -362,7 +395,11 @@ export async function applyMemoryArchiveMaintenance(
       await writeExactBackup(payload.backupPath, bytes)
       await options.faultInjector?.('after-backup')
       const replacement = payload.action === 'migrate-v1'
-        ? migrateV1ArchiveBytes(bytes, { now })
+        ? migrateLegacyArchiveToScopedBytes(
+            bytes,
+            payload.scopeMigration ?? (() => { throw new Error('memory scope migration policy is missing') })(),
+            { now },
+          )
         : bytes.subarray(0, payload.lastValidOffset)
       const verifiedReplacement = inspectArchiveBytes(replacement, limits).inspection
       if (verifiedReplacement.state !== 'ready') throw new Error('memory maintenance replacement did not validate')

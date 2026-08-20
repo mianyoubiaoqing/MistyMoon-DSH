@@ -11,6 +11,14 @@
     searchTimeoutMs: 60000
     fetchTimeoutMs: 60000
 
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
 - id: mistymoon-code-flash
   name: '@deepseek-ai/dsh-tool-subagent'
   config:

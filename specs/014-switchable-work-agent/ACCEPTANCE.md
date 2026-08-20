@@ -42,7 +42,7 @@
 - child 是 fresh spawn，不复制 RP Host transcript 或 completed-turn prefix。
 - delegated `source.kind=user` 且 depth 非零时不生成 Foundation voice/final refresh，不触发 Memory observe/recall/candidate。
 - child transcript 不含 Persona、关系摘要、现实 Recall Snapshot、Character Scene 私密内容或 Campaign 未授权分支。
-- RP Host 没有编码执行或 browser side-effect 工具，但有只读 `web_search` / `web_fetch`；Work child 没有 RP/Memory mutation、final reply、再次委派、push/release 或高风险部署工具。
+- RP Host 没有编码执行或 browser side-effect 工具，但有只读 `web_search` / `web_fetch` / `read` / `grep` / `glob`；Work child 没有 RP/Memory mutation、final reply、再次委派、push/release 或高风险部署工具。
 - schema lookup、Code Mode SDK 和直接 execution 都执行同一 restriction；sandbox/approval 另有权限测试。
 - 同一 logical agent 并发 submit 的第二个请求稳定返回 `busy`；不同 child 无互读输出/通信通道，共享 workspace 写入不并行。
 
@@ -78,7 +78,7 @@
 ## 9. Work Handoff
 
 - 新 activation 不复制旧 transcript，只接收 `WorkHandoffV1` 和下一项任务。
-- Work child 的 completed 自由文本必须先通过严格 `WorkReportV1` 单-block JSON 校验；未知字段、Markdown fence、多 block、非文本、超限字段和 malformed JSON 都转为中性 error，原始载荷不回显。
+- Work child 的 completed 自由文本必须先通过严格 `WorkReportV1` 单 text-block JSON 校验；DSH reasoning blocks 在 completed 与 partial 结果交付前一律丢弃，未知字段、Markdown fence、多 text block、其他非文本、超限字段和 malformed JSON 都转为中性 error，原始载荷不回显。
 - handoff 只能从 completed Work Report、J-Space ledger 和 DSH events 构造；invalid report 不能生成 handoff。
 - handoff 作为真实 model-visible user message 写入新 child Session，provider request 可从日志重建。
 - handoff schema 拒绝未知字段、越界路径、凭据形态和 RP/Memory payload。

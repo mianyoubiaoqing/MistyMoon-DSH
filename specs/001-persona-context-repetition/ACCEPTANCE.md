@@ -2,7 +2,7 @@
 
 ## 0. Preset 策略分流
 
-- `mistymoon-rp-host-v1` 的请求含完整已发布 Persona 的 `deployment:persona`，且 `request/header.system` 可重建实际文本。
+- `mistymoon-rp-host-v2` 的请求含完整已发布 Persona 的 `deployment:persona`，且 `request/header.system` 可重建实际文本。
 - RP Host 请求与工具目录不含 turn-voice、final-voice-refresh 或 `mistymoon_prepare_final_reply`。
 - 同一 Foundation 进程中的非 RP preset 仍通过本文其余全部双阶段验收；RP Host 的启用与卸载不得改变它们。
 - child、伪造 header、自称 RP Host 或非 Owner turn 均不能启用 RP Host system projection。

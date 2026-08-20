@@ -15,6 +15,7 @@ describe('the installable MistyMoon repository bundle', () => {
     const manifest = JSON.parse(await readFile(`${workspaceRoot}/package.json`, 'utf8')) as {
       name?: string
       private?: boolean
+      bin?: Record<string, string>
       files?: string[]
       exports?: Record<string, unknown>
       dsh?: { bundle?: { patch?: string }; client?: { platform?: string } }
@@ -24,10 +25,14 @@ describe('the installable MistyMoon repository bundle', () => {
     }) as Array<{ insert?: Array<{ id?: string; name?: string; config?: Record<string, unknown> }> }>
 
     expect(manifest.name).toBe('@mistymoon/dsh')
-    expect(manifest.private).not.toBe(true)
+    expect(manifest.private).toBe(true)
     expect(manifest.dsh?.bundle?.patch).toBe('./cordis.patch.yml')
     expect(manifest.dsh?.client?.platform).toBe('web')
     expect(manifest.files).toContain('packages/work-agent/presets')
+    expect(manifest.files).toContain('packages/installer/lib')
+    expect(manifest.bin).toEqual({
+      'mistymoon-dsh-install': './packages/installer/lib/cli.js',
+    })
     expect(Object.keys(manifest.exports ?? {})).toEqual([
       '.',
       './client',
@@ -35,8 +40,15 @@ describe('the installable MistyMoon repository bundle', () => {
       './foundation/rp-host',
       './identity',
       './memory',
+      './memory/domain',
+      './memory/candidate-extraction',
+      './memory/conflict',
+      './memory/retrieval',
+      './memory/advanced-retrieval',
+      './memory/lifecycle',
       './memory/legacy-migration',
       './memory/maintenance',
+      './installer',
       './work-agent',
       './work-agent-dsh',
       './package.json',
@@ -64,7 +76,7 @@ describe('the installable MistyMoon repository bundle', () => {
 
     expect(manifest.files).toEqual(['lib', 'presets'])
     await expect(readFile(
-      `${workspaceRoot}/packages/work-agent/presets/mistymoon-work-anchored-standard-v1/agent.cordis.yml`,
+      `${workspaceRoot}/packages/work-agent/presets/mistymoon-work-anchored-standard-v2/agent.cordis.yml`,
       'utf8',
     )).resolves.toContain('MISTYMOON PATCH')
   })
@@ -75,7 +87,7 @@ describe('the installable MistyMoon repository bundle', () => {
       'utf8',
     )) as { files?: string[]; exports?: Record<string, unknown> }
     const preset = yaml.load(await readFile(
-      `${workspaceRoot}/packages/foundation/presets/mistymoon-rp-host-v1/agent.cordis.yml`,
+      `${workspaceRoot}/packages/foundation/presets/mistymoon-rp-host-v2/agent.cordis.yml`,
       'utf8',
     )) as Array<{
       id?: string
@@ -87,13 +99,15 @@ describe('the installable MistyMoon repository bundle', () => {
     expect(manifest.exports).toHaveProperty('./rp-host')
     expect(preset.map(row => row.name)).toEqual([
       '@deepseek-ai/dsh-tool-web',
+      '@deepseek-ai/dsh-tool-fs',
+      '@deepseek-ai/dsh-tool-fs-search',
       '@deepseek-ai/dsh-tool-subagent',
       '@deepseek-ai/dsh-tool-ask-user',
       '@mistymoon/dsh/foundation/rp-host',
       'cordis:group',
     ])
     expect(preset[0]?.config).toMatchObject({ search: true, fetch: true })
-    expect(preset[1]).toMatchObject({
+    expect(preset[3]).toMatchObject({
       id: 'mistymoon-code-flash',
       config: {
         provider: 'mistymoon-work-flash',

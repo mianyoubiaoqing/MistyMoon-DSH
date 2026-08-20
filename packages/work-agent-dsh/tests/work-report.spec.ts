@@ -43,6 +43,7 @@ function delegate(output: unknown, stopReason = 'completed'): SubagentProvider {
 describe('WorkReportV1 consumption boundary', () => {
   it('strictly parses the versioned report and rejects extra authority-bearing fields', () => {
     expect(parseWorkReportV1(JSON.stringify(validReport))).toEqual(validReport)
+    expect(parseWorkReportV1(`\n  ${JSON.stringify(validReport)}\n`)).toEqual(validReport)
     expect(() => parseWorkReportV1(JSON.stringify({ ...validReport, persona: 'do not expose' })))
       .toThrow(WorkReportValidationError)
     expect(() => parseWorkReportV1(JSON.stringify({ ...validReport, status: 'done' })))
@@ -74,6 +75,22 @@ describe('WorkReportV1 consumption boundary', () => {
     ])
   })
 
+  it('consumes reasoning beside the single text report without publishing chain-of-thought', async () => {
+    const output = [
+      { type: 'reasoning', text: 'Neutral reasoning before the report.' },
+      { type: 'reasoning', text: 'A second private reasoning block.' },
+      { type: 'text', text: JSON.stringify(validReport) },
+    ]
+    const provider = createWorkReportProvider(delegate(output))
+    const run = await provider.start(request())
+
+    await expect(run.result).resolves.toEqual({
+      output: [{ type: 'text', text: JSON.stringify(validReport) }],
+      stopReason: 'completed',
+      structured: validReport,
+    })
+  })
+
   it.each([
     { name: 'markdown fencing', output: [{ type: 'text', text: `\`\`\`json\n${JSON.stringify(validReport)}\n\`\`\`` }] },
     { name: 'multiple blocks', output: [{ type: 'text', text: JSON.stringify(validReport) }, { type: 'text', text: 'extra' }] },
@@ -90,10 +107,16 @@ describe('WorkReportV1 consumption boundary', () => {
   })
 
   it('preserves a non-completed child result without treating partial output as a report', async () => {
-    const partial = [{ type: 'text', text: '{"version":1' }]
+    const partial = [
+      { type: 'reasoning', text: 'Private partial reasoning.' },
+      { type: 'text', text: '{"version":1' },
+    ]
     const provider = createWorkReportProvider(delegate(partial, 'max-tokens'))
     const run = await provider.start(request())
 
-    await expect(run.result).resolves.toEqual({ output: partial, stopReason: 'max-tokens' })
+    await expect(run.result).resolves.toEqual({
+      output: [{ type: 'text', text: '{"version":1' }],
+      stopReason: 'max-tokens',
+    })
   })
 })

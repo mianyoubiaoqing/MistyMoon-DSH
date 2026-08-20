@@ -376,7 +376,7 @@ Preset provision 使用内容寻址或版本化目录，目标存在即拒绝覆
 
 - Work Activation 永远是 `delegationDepth>0`，统一 Owner Eligibility 必须令其不能触发 Foundation voice、Memory observation/recall 或治理工具。
 - child preset 中即使含 `source.kind=user` 的 delegation prompt，也不能获得 Owner 身份。
-- RP Host 不获得 shell/edit/write/patch/Git、代码执行或 browser side-effect；它保留只读 `web_search` / `web_fetch`。Work child 不获得 RP/Persona、Memory mutation、final reply、再次委派和公开发布能力。
+- RP Host 不获得 shell/edit/write/patch/Git、代码执行或 browser side-effect；它保留只读 `web_search` / `web_fetch` / `read` / `grep` / `glob`。Work child 不获得 RP/Persona、Memory mutation、final reply、再次委派和公开发布能力。
 - 同一 logical Work Agent 同时最多一个前台 activation；共享 workspace 写入严格串行。第二个 start 在前一个 terminal result 与 dispose 前返回 `busy`，不排队偷跑。不同 child 没有 send/list/read-other-output 通道。
 - switch 不复制或改变 RP Host 的 Persona、Experience Mode、Character Scene 或 Campaign Canon。
 - Work Handoff 只携技术任务状态；跑团规则分析可作为普通工作任务，但叙事和 Canon commit 仍回到 RP Host。
@@ -388,7 +388,7 @@ Preset provision 使用内容寻址或版本化目录，目标存在即拒绝覆
 - child publication 后启动 prompt 前取消：返回 `aborted`，dispose handle；不标记 completed。
 - running 时 switch 请求：返回 `busy`，不排队偷跑；由调用者在 terminal result 与 dispose 后重试。
 - parent dispose：取消当前 one-shot run，再等待 result 与 child quiescence；所有路径最终释放 handle。
-- output/report 校验失败：保留原始 child output 与 stop reason，状态为 `failed-invalid-report`，不能生成可信 handoff。
+- output/report 校验失败：原始 child output 只保留在 DSH-owned child transcript，父级交付收敛为不回显原载荷的中性 error；所有 completed/partial 父级结果都丢弃 reasoning blocks，invalid report 不能生成可信 handoff。
 
 ## 分阶段实施
 

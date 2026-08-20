@@ -58,6 +58,7 @@ export type WorkPresetProvisionReasonV1 =
   | 'confirmation-required'
   | 'current-missing'
   | 'invalid-input'
+  | 'profile-conflict'
   | 'source-changed'
   | 'target-exists'
   | 'unsafe-source'
@@ -258,6 +259,29 @@ export async function applyWorkPresetProvision(
   }
 }
 
+/** Compute the content-only fingerprint used by installer state and drift checks. */
+export function fingerprintAgentPresetDirectory(root: string): Promise<string> {
+  return fingerprintDirectory(root)
+}
+
+/**
+ * Remove only an unchanged target created by a failed surrounding install.
+ * This compensates an incomplete transaction; it is not a user-facing
+ * uninstall operation.
+ */
+export async function compensateWorkPresetProvision(
+  plan: WorkPresetProvisionPlanV1,
+): Promise<void> {
+  if (!(await exists(plan.targetDirectory))) return
+  if (await fingerprintDirectory(plan.targetDirectory) !== plan.sourceFingerprint) {
+    throw new WorkPresetProvisionError(
+      'source-changed',
+      'Provisioned Work preset changed before failed-install compensation.',
+    )
+  }
+  await rm(plan.targetDirectory, { recursive: true, force: false })
+}
+
 /** Generic preset provision action; Work-specific names remain compatibility aliases. */
 export type AgentPresetProvisionActionV1 = WorkPresetProvisionActionV1
 
@@ -280,4 +304,11 @@ export function applyAgentPresetProvision(
   options: { readonly ownerConfirmed: boolean },
 ): Promise<void> {
   return applyWorkPresetProvision(plan, options)
+}
+
+/** Compensate an unchanged preset created by a failed combined installation. */
+export function compensateAgentPresetProvision(
+  plan: AgentPresetProvisionPlanV1,
+): Promise<void> {
+  return compensateWorkPresetProvision(plan)
 }

@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { describe, expect, it } from 'vitest'
 import { openMemoryArchive } from '../src/index.js'
 import { migrateLegacyMemoryDatabase, previewLegacyMemoryDatabase } from '../src/legacy-migration.js'
+import { PERSONAL_COMPANION_ACCESS } from './fixtures.js'
 
 function legacyDatabase(path: string): void {
   const database = new DatabaseSync(path)
@@ -63,13 +64,15 @@ describe('legacy MistyMoon memory migration', () => {
     legacyDatabase(sourcePath)
     const archive = await openMemoryArchive({
       path: targetPath,
-      createId: () => 'new-memory-1',
+      createId: (() => { const ids = ['observation-1', 'new-memory-1']; return () => ids.shift() ?? 'unexpected-id' })(),
     })
 
-    const first = await migrateLegacyMemoryDatabase({ sourcePath, archive })
+    const first = await migrateLegacyMemoryDatabase({
+      sourcePath, archive, context: PERSONAL_COMPANION_ACCESS, memoryKind: 'summary',
+    })
 
     expect(first).toMatchObject({ importedMemories: 1, duplicateMemories: 0, skippedMemories: 2 })
-    expect(archive.recall({ query: '凤凰单丛' })).toEqual([
+    expect(archive.recall({ context: PERSONAL_COMPANION_ACCESS, query: '凤凰单丛' })).toEqual([
       expect.objectContaining({
         id: 'new-memory-1',
         content: '用户喜欢凤凰单丛。',
@@ -78,9 +81,11 @@ describe('legacy MistyMoon memory migration', () => {
         sourceMessageId: 'legacy-mistymoon:old-1',
       }),
     ])
-    const second = await migrateLegacyMemoryDatabase({ sourcePath, archive })
+    const second = await migrateLegacyMemoryDatabase({
+      sourcePath, archive, context: PERSONAL_COMPANION_ACCESS, memoryKind: 'summary',
+    })
     expect(second).toMatchObject({ importedMemories: 0, duplicateMemories: 1, skippedMemories: 2 })
     const reopened = await openMemoryArchive({ path: targetPath })
-    expect(reopened.recall({ query: '凤凰单丛' })).toHaveLength(1)
+    expect(reopened.recall({ context: PERSONAL_COMPANION_ACCESS, query: '凤凰单丛' })).toHaveLength(1)
   })
 })

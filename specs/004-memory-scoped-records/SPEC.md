@@ -1,6 +1,6 @@
 # 004：Owner、Authority 与 Scoped Memory Records
 
-状态：2026-08-18 按已批准 P0 Memory Program 的段 B 实施。本段依赖 `003-memory-storage-reliability` 已通过机械验收；只建立可信 Owner/authority/scope、Memory Observation、kind、有效时间和 confidential 硬过滤，不实现自动抽取、冲突检测、管理页、BM25、外部索引或生命周期策略。
+状态：2026-08-20 已按 P0 Memory Program 完成实现并通过机械验收。本段建立可信 Owner/authority/scope、Memory Observation、kind、有效时间和 confidential 硬过滤；未实现自动抽取、冲突检测、管理页、BM25、外部索引或生命周期策略。
 
 ## 问题
 
