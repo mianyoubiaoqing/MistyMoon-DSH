@@ -35,7 +35,7 @@ README 剩余 P0 同时包含自动写入、冲突治理、存储格式、管理
 | C | `005-memory-candidate-extraction`（已完成） | 回复后自动候选提取 Provider；候选永不自动批准 | A、B | 冲突替代、候选编辑、定时整合 |
 | D | `006-memory-conflict-supersession`（已完成） | 冲突/近重复检测与 Owner 决策后的墓碑、`supersedes` 链 | A、B、C | 自动合并、批量 UI、向量召回 |
 | E | `007-memory-candidate-governance`（已完成） | 候选编辑、合并和不含敏感载荷的操作审计 | A、D | 完整搜索页、召回算法 |
-| F | `008-memory-management-ui` | 搜索、筛选、批量审核和来源查看的专用页面 | A、B、D、E | 直接文件访问、业务规则复制 |
+| F | `008-memory-management-ui`（已完成） | 搜索、筛选、批量审核和来源查看的专用页面 | A、B、D、E | 直接文件访问、业务规则复制 |
 | G | `009-memory-retrieval-seam` | 可解释的 Retrieval Service Definition、内置词法/BM25 Provider 与 Consumer | A、B、D | PageIndex/图引擎强制依赖 |
 | H | `010-memory-advanced-retrieval` | 可选 PageIndex/图关系融合 Adapter 和 shadow 对比 | G | 改变治理事实来源、自动启用外部 Provider |
 | I | `017-memory-lifecycle` | 整合、衰减、归档与恢复 | A、B、D、G | 永久物理删除、无人确认的事实改写 |

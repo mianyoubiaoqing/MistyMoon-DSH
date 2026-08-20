@@ -24,10 +24,11 @@ Pending candidates can be assessed against active records through a deterministi
 
 Candidate edits and merges are append-only governance operations. They create a new pending candidate with complete `sourceCandidateIds` lineage and supersede the source candidates in the same transaction. A payload-free audit projection reports only action, IDs, source request, and time; it never includes candidate content, visibility, or Provider receipts.
 
+The loopback Settings client includes a dedicated Memory management tab backed only by the context-free governance facade. Search and filters run after Archive scope/confidential gates; source views expose identifiers and lineage rather than original DSH message content. Batch review reports one outcome per independently atomic candidate decision, so partial success is explicit and safely retryable.
+
 Current limitations:
 
 - The current `local-dsh-host-rpc` authority supports only the default loopback Web single-Owner deployment. Other channels remain fail-closed until they supply an authenticated authority adapter.
 - The extraction seam and post-response consumer are active, but no local-model or remote Provider is bundled; candidates can still be proposed through the governed DSH tool.
 - Recall is lexical. Embeddings and reranking remain optional future adapters.
-- There is no dedicated memory-management Web panel yet; confirmed-memory and candidate governance currently use DSH tools.
 - Imported batches do not yet have a rollback command. Individual imported memories remain forgettable through the normal append-only tool.

@@ -9,12 +9,17 @@ import { RpWorkDelegationRuntime } from '@mistymoon/dsh-work-agent-dsh'
 import {
   applyMistyMoonCharacterCard,
   approveMistyMoonCandidate,
+  assessMistyMoonCandidate,
+  batchMistyMoonCandidates,
   configureMistyMoonWorkModel,
   publishMistyMoonPersona,
   readMistyMoonCandidates,
+  readMistyMoonMemory,
+  readMistyMoonMemorySource,
   readMistyMoonSettings,
   readMistyMoonWorkModel,
   rejectMistyMoonCandidate,
+  reviseMistyMoonCandidates,
   saveMistyMoonSettings,
   previewMistyMoonCharacterCard,
 } from '../src/index.js'
@@ -122,6 +127,13 @@ describe('MistyMoon settings Host API', () => {
 
     const governance: MemoryGovernanceService = {
       listCandidates: input => archive.listCandidates({ context: memoryAccess, ...input }),
+      assessCandidate: input => archive.assessCandidate({ context: memoryAccess, ...input }),
+      editCandidate: input => archive.editCandidate({ context: memoryAccess, ...input }),
+      mergeCandidates: input => archive.mergeCandidates({ context: memoryAccess, ...input }),
+      listGovernanceAudit: input => archive.listGovernanceAudit({ context: memoryAccess, ...input }),
+      manage: input => archive.manage({ context: memoryAccess, ...input }),
+      sourceView: input => archive.sourceView({ context: memoryAccess, ...input }),
+      batchDecide: input => archive.batchDecide({ context: memoryAccess, ...input }),
       approveCandidate: input => archive.approveCandidate({ context: memoryAccess, ...input }),
       rejectCandidate: input => archive.rejectCandidate({ context: memoryAccess, ...input }),
     }
@@ -135,6 +147,53 @@ describe('MistyMoon settings Host API', () => {
       expect.objectContaining({ content: '主人周末会整理书桌。', sourceCandidateId: approvedCandidate.id }),
     ])
     expect(archive.recall({ context: memoryAccess, query: '凌晨四点' })).toEqual([])
+  })
+
+  it('uses the Memory-owned management facade for search, source, revision, assessment, and batch review', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'mistymoon-memory-management-settings-'))
+    const archive = await openMemoryArchive({
+      path: join(home, 'memory', 'memories.jsonl'),
+      now: () => new Date('2026-08-20T12:00:00.000Z'),
+    })
+    const candidate = await archive.propose({
+      context: memoryAccess,
+      sourceMessageId: 'management-source',
+      content: '中性设置页候选。',
+      visibility: 'personal',
+      memoryKind: 'summary',
+    })
+    const governance: MemoryGovernanceService = {
+      listCandidates: input => archive.listCandidates({ context: memoryAccess, ...input }),
+      assessCandidate: input => archive.assessCandidate({ context: memoryAccess, ...input }),
+      editCandidate: input => archive.editCandidate({ context: memoryAccess, ...input }),
+      mergeCandidates: input => archive.mergeCandidates({ context: memoryAccess, ...input }),
+      listGovernanceAudit: input => archive.listGovernanceAudit({ context: memoryAccess, ...input }),
+      manage: input => archive.manage({ context: memoryAccess, ...input }),
+      sourceView: input => archive.sourceView({ context: memoryAccess, ...input }),
+      batchDecide: input => archive.batchDecide({ context: memoryAccess, ...input }),
+      approveCandidate: input => archive.approveCandidate({ context: memoryAccess, ...input }),
+      rejectCandidate: input => archive.rejectCandidate({ context: memoryAccess, ...input }),
+    }
+
+    expect(readMistyMoonMemory(governance, { query: '设置页', candidateStatus: 'pending' }).candidates)
+      .toEqual([candidate])
+    expect(readMistyMoonMemorySource(governance, { entity: 'candidate', id: candidate.id }))
+      .toMatchObject({ observation: { sourceId: 'management-source' } })
+    expect(assessMistyMoonCandidate(governance, { candidateId: candidate.id }).relationships).toEqual([])
+
+    const edited = await reviseMistyMoonCandidates(governance, 'edit', {
+      candidateIds: [candidate.id],
+      requestId: 'edit-request',
+      content: '中性设置页编辑候选。',
+      visibility: 'personal',
+      memoryKind: 'summary',
+    })
+    await expect(batchMistyMoonCandidates(governance, {
+      requestId: 'batch-request',
+      decisions: [{ candidateId: edited.id, action: 'reject' }],
+    })).resolves.toMatchObject({ results: [{ candidateId: edited.id, status: 'succeeded' }] })
+    expect(() => readMistyMoonMemory(governance, { ownerId: 'browser-must-not-select-owner' }))
+      .toThrow('unknown fields')
   })
 
   it('lists and saves only credential-free Work models registered in DSH', async () => {

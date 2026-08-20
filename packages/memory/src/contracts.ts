@@ -117,6 +117,63 @@ export interface MemoryGovernanceAuditList extends TrustedMemoryRequest {
   limit?: number
 }
 
+export interface MemoryManagementQueryV1 extends TrustedMemoryRequest {
+  query?: string
+  memoryKind?: MemoryKind
+  visibility?: MemoryVisibility
+  recordStatus?: 'active' | 'inactive' | 'all'
+  candidateStatus?: MemoryCandidate['status'] | 'all'
+  limit?: number
+}
+
+export interface MemoryManagementSnapshotV1 {
+  schemaVersion: 1
+  records: MemoryRecord[]
+  candidates: MemoryCandidate[]
+  audit: MemoryGovernanceAuditEntryV1[]
+}
+
+export interface MemorySourceViewRequestV1 extends TrustedMemoryRequest {
+  entity: 'record' | 'candidate'
+  id: string
+}
+
+/** Payload-free provenance view for the local Owner management UI. */
+export interface MemorySourceViewV1 {
+  schemaVersion: 1
+  entity: 'record' | 'candidate'
+  id: string
+  observation: {
+    id: string
+    sourceKind: string
+    sourceId: string
+    observedAt: string
+  }
+  sourceCandidateId?: string
+  sourceCandidateIds?: readonly string[]
+  supersedesMemoryId?: string
+}
+
+export interface MemoryBatchDecisionV1 {
+  candidateId: string
+  action: 'approve' | 'reject'
+  resolution?: MemoryCandidateDecision['resolution']
+}
+
+export interface MemoryBatchGovernanceRequestV1 extends TrustedMemoryRequest {
+  requestId: string
+  decisions: readonly MemoryBatchDecisionV1[]
+}
+
+export interface MemoryBatchGovernanceResultV1 {
+  schemaVersion: 1
+  results: Array<{
+    candidateId: string
+    status: 'succeeded' | 'failed'
+    code?: string
+  }>
+}
+
 /** Input for retiring one memory without deleting its audit history. */
 export interface MemoryForget extends TrustedMemoryRequest {
   memoryId: string
@@ -188,6 +245,9 @@ export interface CompanionMemoryArchive {
   editCandidate(input: MemoryCandidateRevision): Promise<MemoryCandidate>
   mergeCandidates(input: MemoryCandidateRevision): Promise<MemoryCandidate>
   listGovernanceAudit(input: MemoryGovernanceAuditList): MemoryGovernanceAuditEntryV1[]
+  manage(input: MemoryManagementQueryV1): MemoryManagementSnapshotV1
+  sourceView(input: MemorySourceViewRequestV1): MemorySourceViewV1
+  batchDecide(input: MemoryBatchGovernanceRequestV1): Promise<MemoryBatchGovernanceResultV1>
   approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord>
   rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate>
 }
@@ -199,6 +259,9 @@ export interface MemoryGovernanceService {
   editCandidate(input: Omit<MemoryCandidateRevision, 'context'>): Promise<MemoryCandidate>
   mergeCandidates(input: Omit<MemoryCandidateRevision, 'context'>): Promise<MemoryCandidate>
   listGovernanceAudit(input?: Omit<MemoryGovernanceAuditList, 'context'>): MemoryGovernanceAuditEntryV1[]
+  manage(input?: Omit<MemoryManagementQueryV1, 'context'>): MemoryManagementSnapshotV1
+  sourceView(input: Omit<MemorySourceViewRequestV1, 'context'>): MemorySourceViewV1
+  batchDecide(input: Omit<MemoryBatchGovernanceRequestV1, 'context'>): Promise<MemoryBatchGovernanceResultV1>
   approveCandidate(input: Omit<MemoryCandidateDecision, 'context'>): Promise<MemoryRecord>
   rejectCandidate(input: Omit<MemoryCandidateDecision, 'context'>): Promise<MemoryCandidate>
 }

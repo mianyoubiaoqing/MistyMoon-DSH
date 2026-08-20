@@ -6,12 +6,18 @@ import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {
   CharacterCardPersonaMapping,
+  MemoryBatchDecisionV1,
+  MemoryBatchGovernanceResultV1,
   MemoryCandidate,
+  MemoryConflictAssessmentV1,
+  MemoryManagementSnapshotV1,
+  MemorySourceViewV1,
   MistyMoonCharacterCardPreview,
   MistyMoonSettingsSnapshot,
   MistyMoonWorkModelSnapshot,
 } from '../contracts.js'
 import { MistyMoonSettingsTab, type MistyMoonSettingsTabInjected } from './MistyMoonSettingsTab.js'
+import { MistyMoonMemoryTab, type MistyMoonMemoryTabInjected, type MemorySearchFilters } from './MistyMoonMemoryTab.js'
 import { en, zh, type MistyMoonSettingsLocaleKey } from './locales.js'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -41,6 +47,7 @@ const CSS = `
 .mistymoon-import{display:flex;flex-direction:column;gap:10px}.mistymoon-import-meta{display:flex;flex-wrap:wrap;gap:8px}.mistymoon-import-meta span{background:var(--dsw-alias-bg-layer-1);border-radius:999px;padding:3px 8px;font-size:12px}.mistymoon-import-warnings{margin:0;padding-left:20px;color:var(--dsw-alias-state-warning-primary);font-size:13px}.mistymoon-settings select{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;border-radius:8px;padding:8px 10px}
 .mistymoon-review{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:12px}.mistymoon-review h4,.mistymoon-review p{margin:0}.mistymoon-review>div>p,.mistymoon-empty{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}.mistymoon-candidate{display:flex;flex-direction:column;gap:8px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);border-radius:8px;padding:12px}.mistymoon-candidate>p{font-size:14px;line-height:21px}.mistymoon-candidate-actions{display:flex;gap:8px;justify-content:flex-end}.mistymoon-candidate-actions button{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;border-radius:7px;padding:6px 12px;cursor:pointer}.mistymoon-candidate-actions button:first-child{border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary)}.mistymoon-candidate-actions button:disabled{opacity:.5;cursor:not-allowed}
 .mistymoon-validation,.mistymoon-error{color:var(--dsw-alias-state-error-primary);font-size:13px}.mistymoon-success{color:var(--dsw-alias-state-success-primary);font-size:13px}.mistymoon-error{display:flex;align-items:center;gap:10px}
+.mistymoon-memory-manager article+article{margin-top:8px}.mistymoon-memory-manager pre{overflow-wrap:anywhere}.mistymoon-memory-filters>input{margin-bottom:4px}
 @media (max-width:680px){.mistymoon-grid{grid-template-columns:minmax(0,1fr)}}`
 
 function snapshot(value: unknown): MistyMoonSettingsSnapshot {
@@ -92,6 +99,40 @@ function workModelSnapshot(value: unknown): MistyMoonWorkModelSnapshot {
     throw new Error('invalid MistyMoon Work model response')
   }
   return value as unknown as MistyMoonWorkModelSnapshot
+}
+
+function managementSnapshot(value: unknown): MemoryManagementSnapshotV1 {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('invalid memory management response')
+  const record = value as Record<string, unknown>
+  if (record.schemaVersion !== 1 || !Array.isArray(record.records)
+    || !Array.isArray(record.candidates) || !Array.isArray(record.audit)) throw new Error('invalid memory management response')
+  return value as MemoryManagementSnapshotV1
+}
+
+function sourceSnapshot(value: unknown): MemorySourceViewV1 {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('invalid memory source response')
+  const record = value as Record<string, unknown>
+  if (record.schemaVersion !== 1 || (record.entity !== 'record' && record.entity !== 'candidate')
+    || typeof record.id !== 'string' || typeof record.observation !== 'object' || record.observation === null) {
+    throw new Error('invalid memory source response')
+  }
+  return value as unknown as MemorySourceViewV1
+}
+
+function assessmentSnapshot(value: unknown): MemoryConflictAssessmentV1 {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('invalid memory assessment response')
+  const record = value as Record<string, unknown>
+  if (record.schemaVersion !== 1 || typeof record.candidateId !== 'string' || !Array.isArray(record.relationships)) {
+    throw new Error('invalid memory assessment response')
+  }
+  return value as unknown as MemoryConflictAssessmentV1
+}
+
+function batchSnapshot(value: unknown): MemoryBatchGovernanceResultV1 {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('invalid memory batch response')
+  const record = value as Record<string, unknown>
+  if (record.schemaVersion !== 1 || !Array.isArray(record.results)) throw new Error('invalid memory batch response')
+  return value as MemoryBatchGovernanceResultV1
 }
 
 /** Register the MistyMoon tab in the Plugins settings section. */
@@ -184,6 +225,38 @@ export function apply(ctx: ClientContext): void {
     approveCandidate: candidateId => decideCandidate('candidate-approve', candidateId),
     rejectCandidate: candidateId => decideCandidate('candidate-reject', candidateId),
   }
+  const memoryRpc = async (endpoint: string, payload: unknown): Promise<unknown> => {
+    const result = await connection.rpc.call('/mistymoon-settings', endpoint, payload)
+    if (!result.ok) throw new Error(`${result.error.code}: ${result.error.message}`)
+    return result.value
+  }
+  const memoryInjected: MistyMoonMemoryTabInjected = {
+    search: async (filters: MemorySearchFilters) => managementSnapshot(await memoryRpc('memory-search', filters)),
+    source: async (entity, id) => sourceSnapshot(await memoryRpc('memory-source', { entity, id })),
+    assess: async candidateId => assessmentSnapshot(await memoryRpc('memory-assess', { candidateId })),
+    batch: async (decisions: MemoryBatchDecisionV1[]) => batchSnapshot(await memoryRpc('memory-batch', {
+      requestId: crypto.randomUUID(),
+      decisions,
+    })),
+    edit: async (candidate, content) => {
+      await memoryRpc('memory-edit', {
+        candidateIds: [candidate.id],
+        requestId: crypto.randomUUID(),
+        content,
+        visibility: candidate.visibility,
+        memoryKind: candidate.memoryKind,
+      })
+    },
+    merge: async (candidateIds, content, memoryKind, visibility) => {
+      await memoryRpc('memory-merge', {
+        candidateIds,
+        requestId: crypto.randomUUID(),
+        content,
+        visibility,
+        memoryKind,
+      })
+    },
+  }
   const t = ctx.locale.bind(NS)
   ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
     name: 'settings.plugins.tab',
@@ -193,7 +266,16 @@ export function apply(ctx: ClientContext): void {
     locale: NS,
     inject: () => injected,
   }, MistyMoonSettingsTab))
+  ctx.slots.inject('settings.plugins.tab', () => ctx.slots.register({
+    name: 'settings.plugins.tab',
+    id: 'mistymoon-memory',
+    order: 6,
+    label: () => t('memoryTab'),
+    locale: NS,
+    inject: () => memoryInjected,
+  }, MistyMoonMemoryTab))
 }
 
 export type { MistyMoonSettingsTabInjected, MistyMoonSettingsTabProps } from './MistyMoonSettingsTab.js'
+export type { MistyMoonMemoryTabInjected, MistyMoonMemoryTabProps } from './MistyMoonMemoryTab.js'
 export type { MistyMoonSettingsLocaleKey } from './locales.js'

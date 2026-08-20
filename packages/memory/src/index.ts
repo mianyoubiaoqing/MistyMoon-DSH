@@ -22,13 +22,19 @@ import type {
   MemoryCandidateProposal,
   MemoryCandidateRevision,
   MemoryForget,
+  MemoryBatchGovernanceRequestV1,
+  MemoryBatchGovernanceResultV1,
   MemoryGovernanceService,
   MemoryGovernanceAuditEntryV1,
   MemoryGovernanceAuditList,
+  MemoryManagementQueryV1,
+  MemoryManagementSnapshotV1,
   MemoryList,
   MemoryRecall,
   MemoryRecord,
   MemoryReplace,
+  MemorySourceViewRequestV1,
+  MemorySourceViewV1,
   MemoryVisibility,
 } from './contracts.js'
 import { DEFAULT_RECALL_LIMIT, loadMemoryRuntimeSettings } from './runtime-settings.js'
@@ -673,6 +679,117 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
         createdAt: candidate.createdAt,
         sourceMessageId: candidate.sourceMessageId,
       }))
+  }
+
+  manage(input: MemoryManagementQueryV1): MemoryManagementSnapshotV1 {
+    const context = this.#context(input.context)
+    const state = this.storage.snapshot()
+    if (state === undefined) return { schemaVersion: 1, records: [], candidates: [], audit: [] }
+    const limit = input.limit ?? 100
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) throw new TypeError('memory management limit must be from 1 through 500')
+    const query = input.query?.trim().toLocaleLowerCase() ?? ''
+    const matches = (content: string): boolean => query === '' || content.toLocaleLowerCase().includes(query)
+    const recordStatus = input.recordStatus ?? 'active'
+    const candidateStatus = input.candidateStatus ?? 'pending'
+    const records = state.records
+      .filter(memory => this.#sameDomain(state, memory, context)
+        && canDiscloseMemory(memory.visibility, context)
+        && matches(memory.content)
+        && (input.memoryKind === undefined || memory.memoryKind === input.memoryKind)
+        && (input.visibility === undefined || memory.visibility === input.visibility)
+        && (recordStatus === 'all'
+          || (recordStatus === 'active' ? memory.status === 'confirmed' : memory.status !== 'confirmed')))
+      .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+      .slice(0, limit)
+    const candidates = state.candidates
+      .filter(candidate => this.#sameDomain(state, candidate, context)
+        && canDiscloseMemory(candidate.visibility, context)
+        && matches(candidate.content)
+        && (input.memoryKind === undefined || candidate.memoryKind === input.memoryKind)
+        && (input.visibility === undefined || candidate.visibility === input.visibility)
+        && (candidateStatus === 'all' || candidate.status === candidateStatus))
+      .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+      .slice(0, limit)
+    return {
+      schemaVersion: 1,
+      records,
+      candidates,
+      audit: this.listGovernanceAudit({ context, limit }),
+    }
+  }
+
+  sourceView(input: MemorySourceViewRequestV1): MemorySourceViewV1 {
+    const context = this.#context(input.context)
+    const state = this.storage.snapshot()
+    if (state === undefined) throw new Error('memory archive is unavailable')
+    const entity = input.entity === 'record'
+      ? state.byId.get(input.id)
+      : state.candidateById.get(input.id)
+    if (entity === undefined || !this.#sameDomain(state, entity, context)
+      || !canDiscloseMemory(entity.visibility, context)) {
+      throw new MemoryArchiveError('memory source is unavailable in the trusted Owner/scope', 'MEMORY_SCOPE_MISMATCH')
+    }
+    const observation = state.observations.get(entity.observationId)
+    if (observation === undefined) throw new Error('memory source observation is unavailable')
+    return {
+      schemaVersion: 1,
+      entity: input.entity,
+      id: entity.id,
+      observation: {
+        id: observation.id,
+        sourceKind: observation.source.kind,
+        sourceId: observation.source.id,
+        observedAt: observation.observedAt,
+      },
+      ...('sourceCandidateId' in entity && entity.sourceCandidateId !== undefined
+        ? { sourceCandidateId: entity.sourceCandidateId }
+        : {}),
+      ...('sourceCandidateIds' in entity && entity.sourceCandidateIds !== undefined
+        ? { sourceCandidateIds: [...entity.sourceCandidateIds] }
+        : {}),
+      ...('supersedesMemoryId' in entity && entity.supersedesMemoryId !== undefined
+        ? { supersedesMemoryId: entity.supersedesMemoryId }
+        : {}),
+    }
+  }
+
+  async batchDecide(input: MemoryBatchGovernanceRequestV1): Promise<MemoryBatchGovernanceResultV1> {
+    const context = this.#context(input.context)
+    const requestId = input.requestId.trim()
+    if (requestId === '') throw new TypeError('memory batch requestId must be non-empty')
+    if (input.decisions.length < 1 || input.decisions.length > 50) {
+      throw new TypeError('memory batch decisions must contain from 1 through 50 items')
+    }
+    const ids = input.decisions.map(item => item.candidateId)
+    if (ids.some(id => id.trim() === '') || new Set(ids).size !== ids.length) {
+      throw new TypeError('memory batch candidate IDs must be non-empty and unique')
+    }
+    for (const decision of input.decisions) {
+      if (decision.action === 'reject' && decision.resolution !== undefined) {
+        throw new TypeError('rejected candidates cannot carry a conflict resolution')
+      }
+    }
+    const results: MemoryBatchGovernanceResultV1['results'] = []
+    for (const [index, decision] of input.decisions.entries()) {
+      try {
+        const sourceMessageId = `memory-batch:${requestId}:${index}`
+        if (decision.action === 'approve') {
+          await this.approveCandidate({
+            context,
+            candidateId: decision.candidateId,
+            sourceMessageId,
+            ...(decision.resolution === undefined ? {} : { resolution: decision.resolution }),
+          })
+        } else {
+          await this.rejectCandidate({ context, candidateId: decision.candidateId, sourceMessageId })
+        }
+        results.push({ candidateId: decision.candidateId, status: 'succeeded' })
+      } catch (error) {
+        const code = error instanceof MemoryArchiveError ? error.code : 'MEMORY_GOVERNANCE_FAILED'
+        results.push({ candidateId: decision.candidateId, status: 'failed', code })
+      }
+    }
+    return { schemaVersion: 1, results }
   }
 
   assessCandidate(input: MemoryCandidateAssessment): MemoryConflictAssessmentV1 {
@@ -1324,6 +1441,9 @@ function memoryGovernanceService(
     editCandidate: input => archive.editCandidate({ context, ...input }),
     mergeCandidates: input => archive.mergeCandidates({ context, ...input }),
     listGovernanceAudit: input => archive.listGovernanceAudit({ context, ...input }),
+    manage: input => archive.manage({ context, ...input }),
+    sourceView: input => archive.sourceView({ context, ...input }),
+    batchDecide: input => archive.batchDecide({ context, ...input }),
     approveCandidate: input => archive.approveCandidate({ context, ...input }),
     rejectCandidate: input => archive.rejectCandidate({ context, ...input }),
   }

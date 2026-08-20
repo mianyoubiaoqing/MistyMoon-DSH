@@ -28,6 +28,13 @@ import {
 } from '@mistymoon/dsh-memory/runtime-settings'
 import type {} from '@mistymoon/dsh-memory'
 import type { MemoryCandidate, MemoryGovernanceService, MemoryRecord } from '@mistymoon/dsh-memory/contracts'
+import type {
+  MemoryBatchGovernanceResultV1,
+  MemoryManagementSnapshotV1,
+  MemorySourceViewV1,
+} from '@mistymoon/dsh-memory/contracts'
+import type { MemoryConflictAssessmentV1 } from '@mistymoon/dsh-memory/conflict'
+import { parseMemoryKind } from '@mistymoon/dsh-memory/domain'
 import type {} from '@mistymoon/dsh-work-agent-dsh'
 import type {
   CharacterCardPersonaMapping,
@@ -73,6 +80,11 @@ function exactObject(value: unknown, keys: readonly string[]): value is Record<s
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   const actual = Object.keys(value).toSorted()
   return actual.length === keys.length && actual.every((key, index) => key === keys.toSorted()[index])
+}
+
+function allowedObject(value: unknown, allowed: readonly string[]): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  return Object.keys(value).every(key => allowed.includes(key))
 }
 
 /**
@@ -202,6 +214,137 @@ export async function rejectMistyMoonCandidate(
   return governance.rejectCandidate({ candidateId, sourceMessageId: `settings-ui:${requestId}` })
 }
 
+/** Parse local UI filters and query the Memory-owned management projection. */
+export function readMistyMoonMemory(
+  governance: MemoryGovernanceService,
+  value: unknown,
+): MemoryManagementSnapshotV1 {
+  if (!allowedObject(value, ['candidateStatus', 'limit', 'memoryKind', 'query', 'recordStatus', 'visibility'])) {
+    throw new Error('memory search contains unknown fields')
+  }
+  const input = value as Record<string, unknown>
+  if (input.query !== undefined && typeof input.query !== 'string') throw new Error('memory query must be a string')
+  const memoryKind = input.memoryKind === undefined ? undefined : parseMemoryKind(input.memoryKind)
+  if (input.visibility !== undefined && input.visibility !== 'personal' && input.visibility !== 'confidential') {
+    throw new Error('memory visibility filter is unsupported')
+  }
+  if (input.recordStatus !== undefined && input.recordStatus !== 'active'
+    && input.recordStatus !== 'inactive' && input.recordStatus !== 'all') {
+    throw new Error('memory record status filter is unsupported')
+  }
+  if (input.candidateStatus !== undefined && input.candidateStatus !== 'pending'
+    && input.candidateStatus !== 'approved' && input.candidateStatus !== 'rejected'
+    && input.candidateStatus !== 'superseded' && input.candidateStatus !== 'all') {
+    throw new Error('memory candidate status filter is unsupported')
+  }
+  if (input.limit !== undefined && (!Number.isSafeInteger(input.limit) || (input.limit as number) < 1 || (input.limit as number) > 500)) {
+    throw new Error('memory management limit must be from 1 through 500')
+  }
+  return governance.manage({
+    ...(input.query === undefined ? {} : { query: input.query as string }),
+    ...(memoryKind === undefined ? {} : { memoryKind }),
+    ...(input.visibility === undefined ? {} : { visibility: input.visibility as 'personal' | 'confidential' }),
+    ...(input.recordStatus === undefined ? {} : { recordStatus: input.recordStatus as 'active' | 'inactive' | 'all' }),
+    ...(input.candidateStatus === undefined ? {} : {
+      candidateStatus: input.candidateStatus as 'pending' | 'approved' | 'rejected' | 'superseded' | 'all',
+    }),
+    ...(input.limit === undefined ? {} : { limit: input.limit as number }),
+  })
+}
+
+export function readMistyMoonMemorySource(
+  governance: MemoryGovernanceService,
+  value: unknown,
+): MemorySourceViewV1 {
+  if (!exactObject(value, ['entity', 'id'])
+    || (value.entity !== 'record' && value.entity !== 'candidate')
+    || typeof value.id !== 'string' || value.id.trim() === '') {
+    throw new Error('memory source view requires an entity and id')
+  }
+  return governance.sourceView({ entity: value.entity, id: value.id })
+}
+
+export function assessMistyMoonCandidate(
+  governance: MemoryGovernanceService,
+  value: unknown,
+): MemoryConflictAssessmentV1 {
+  if (!exactObject(value, ['candidateId']) || typeof value.candidateId !== 'string' || value.candidateId.trim() === '') {
+    throw new Error('memory assessment requires one candidateId')
+  }
+  return governance.assessCandidate({ candidateId: value.candidateId })
+}
+
+function batchDecision(value: unknown): {
+  candidateId: string
+  action: 'approve' | 'reject'
+  resolution?: { kind: 'keep-both' } | { kind: 'supersede'; memoryId: string }
+} {
+  if (!allowedObject(value, ['action', 'candidateId', 'resolution'])) throw new Error('memory batch decision is invalid')
+  const input = value as Record<string, unknown>
+  if (typeof input.candidateId !== 'string' || input.candidateId.trim() === ''
+    || (input.action !== 'approve' && input.action !== 'reject')) throw new Error('memory batch decision is invalid')
+  let resolution: { kind: 'keep-both' } | { kind: 'supersede'; memoryId: string } | undefined
+  if (input.resolution !== undefined) {
+    if (!allowedObject(input.resolution, ['kind', 'memoryId'])) throw new Error('memory conflict resolution is invalid')
+    const candidate = input.resolution as Record<string, unknown>
+    if (candidate.kind === 'keep-both' && candidate.memoryId === undefined) resolution = { kind: 'keep-both' }
+    else if (candidate.kind === 'supersede' && typeof candidate.memoryId === 'string' && candidate.memoryId.trim() !== '') {
+      resolution = { kind: 'supersede', memoryId: candidate.memoryId }
+    } else throw new Error('memory conflict resolution is invalid')
+  }
+  if (input.action === 'reject' && resolution !== undefined) throw new Error('rejected candidate cannot carry a resolution')
+  return { candidateId: input.candidateId, action: input.action, ...(resolution === undefined ? {} : { resolution }) }
+}
+
+export async function batchMistyMoonCandidates(
+  governance: MemoryGovernanceService,
+  value: unknown,
+): Promise<MemoryBatchGovernanceResultV1> {
+  if (!exactObject(value, ['decisions', 'requestId'])
+    || typeof value.requestId !== 'string' || value.requestId.trim() === ''
+    || !Array.isArray(value.decisions)) throw new Error('memory batch request is invalid')
+  return governance.batchDecide({ requestId: value.requestId, decisions: value.decisions.map(batchDecision) })
+}
+
+function revisionRequest(value: unknown): {
+  requestId: string
+  candidateIds: string[]
+  content: string
+  visibility: 'personal' | 'confidential'
+  memoryKind: ReturnType<typeof parseMemoryKind>
+} {
+  if (!exactObject(value, ['candidateIds', 'content', 'memoryKind', 'requestId', 'visibility'])
+    || typeof value.requestId !== 'string' || value.requestId.trim() === ''
+    || !Array.isArray(value.candidateIds) || value.candidateIds.some(item => typeof item !== 'string' || item.trim() === '')
+    || typeof value.content !== 'string' || value.content.trim() === ''
+    || (value.visibility !== 'personal' && value.visibility !== 'confidential')) {
+    throw new Error('memory candidate revision is invalid')
+  }
+  return {
+    requestId: value.requestId,
+    candidateIds: value.candidateIds as string[],
+    content: value.content,
+    visibility: value.visibility,
+    memoryKind: parseMemoryKind(value.memoryKind),
+  }
+}
+
+export async function reviseMistyMoonCandidates(
+  governance: MemoryGovernanceService,
+  mode: 'edit' | 'merge',
+  value: unknown,
+): Promise<MemoryCandidate> {
+  const input = revisionRequest(value)
+  const request = {
+    candidateIds: input.candidateIds,
+    sourceMessageId: `settings-ui:${input.requestId}`,
+    content: input.content,
+    visibility: input.visibility,
+    memoryKind: input.memoryKind,
+  }
+  return mode === 'edit' ? governance.editCandidate(request) : governance.mergeCandidates(request)
+}
+
 /** Read the live DSH model catalog and the credential-free Work selection. */
 export async function readMistyMoonWorkModel(ctx: Context): Promise<MistyMoonWorkModelSnapshot> {
   return {
@@ -306,6 +449,33 @@ export function apply(ctx: Context, config: Config): void {
           return { ok: true, value }
         } catch (error) {
           return badRequest(error instanceof Error ? error.message : 'MistyMoon candidate decision failed.')
+        }
+      }
+      if (endpoint === 'memory-search' || endpoint === 'memory-source' || endpoint === 'memory-assess'
+        || endpoint === 'memory-batch' || endpoint === 'memory-edit' || endpoint === 'memory-merge') {
+        try {
+          if (endpoint === 'memory-search') {
+            return { ok: true, value: readMistyMoonMemory(ctx.mistymoonMemoryGovernance, payload) }
+          }
+          if (endpoint === 'memory-source') {
+            return { ok: true, value: readMistyMoonMemorySource(ctx.mistymoonMemoryGovernance, payload) }
+          }
+          if (endpoint === 'memory-assess') {
+            return { ok: true, value: assessMistyMoonCandidate(ctx.mistymoonMemoryGovernance, payload) }
+          }
+          if (endpoint === 'memory-batch') {
+            return { ok: true, value: await batchMistyMoonCandidates(ctx.mistymoonMemoryGovernance, payload) }
+          }
+          return {
+            ok: true,
+            value: await reviseMistyMoonCandidates(
+              ctx.mistymoonMemoryGovernance,
+              endpoint === 'memory-edit' ? 'edit' : 'merge',
+              payload,
+            ),
+          }
+        } catch (error) {
+          return badRequest(error instanceof Error ? error.message : 'MistyMoon memory management failed.')
         }
       }
       if (endpoint === 'work-model-read') {

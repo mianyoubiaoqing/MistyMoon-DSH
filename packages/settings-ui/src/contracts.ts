@@ -5,7 +5,14 @@ import type {
 } from '@mistymoon/dsh-foundation/character-card'
 import type { CharacterCardFilePreview } from '@mistymoon/dsh-foundation/character-card-container'
 import type { PersonaVersionSummary } from '@mistymoon/dsh-foundation/persona-workspace'
-import type { MemoryCandidate } from '@mistymoon/dsh-memory/contracts'
+import type {
+  MemoryBatchDecisionV1,
+  MemoryBatchGovernanceResultV1,
+  MemoryCandidate,
+  MemoryManagementSnapshotV1,
+  MemorySourceViewV1,
+} from '@mistymoon/dsh-memory/contracts'
+import type { MemoryConflictAssessmentV1 } from '@mistymoon/dsh-memory/conflict'
 import type {
   WorkModelCatalogEntryV1,
   WorkModelRouteSettingsV1,
@@ -44,6 +51,11 @@ export interface MistyMoonWorkModelSnapshot {
 export type {
   CharacterCardPersonaMapping,
   MemoryCandidate,
+  MemoryBatchDecisionV1,
+  MemoryBatchGovernanceResultV1,
+  MemoryConflictAssessmentV1,
+  MemoryManagementSnapshotV1,
+  MemorySourceViewV1,
   WorkModelCatalogEntryV1,
   WorkModelRouteSettingsV1,
 }
