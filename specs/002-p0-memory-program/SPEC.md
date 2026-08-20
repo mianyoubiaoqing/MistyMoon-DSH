@@ -1,6 +1,6 @@
 # 002：P0 Memory Program 分段执行规范
 
-状态：2026-08-18 Owner 已明确授权下一会话在仓库代码与中性 fixture 上按依赖顺序彻底实现 Memory。A–I 仍须各自先形成独立 `SPEC.md`、`ACCEPTANCE.md` 与可验收纵切片，但普通、可回滚的本地实现不再逐段等待重复授权。该授权不包含真实档案迁移/恢复、远端 Provider 启用、永久物理删除、部署、发布、commit 或 push；这些高风险动作仍须单独确认。
+状态：2026-08-20 A–I 已按独立 `SPEC.md`、`ACCEPTANCE.md`、TDD 纵切片和提交完成。Owner 已另行授权本 RC.6 分支的 commit、push 与 PR；真实档案迁移/恢复、远端 Provider 启用、永久物理删除、部署和 Release/Desktop 发布仍未授权且未执行。
 
 基线：MistyMoon `dd4506e7ffe9ac7902b23c9387b1cc82b598e393`；DSH 官方 `master` `47f943859bef60e4160492346772ded9b24f765a`，已通过 `git ls-remote` 核对。MistyMoon 与 DSH 工作区现有修改均视为用户所有。
 
@@ -30,8 +30,8 @@ README 剩余 P0 同时包含自动写入、冲突治理、存储格式、管理
 
 | 段 | 叶子 Spec | 唯一主要结果 | 依赖 | 明确不包含 |
 | --- | --- | --- | --- | --- |
-| A | `003-memory-storage-reliability` | 版本化事务记录、跨进程单写者、显式迁移和损坏恢复 | 无 | 自动提取、冲突模型、管理页、召回算法 |
-| B | `004-memory-scoped-records` | Trusted Owner/authority/scope、Memory Observation、kind 与有效时间成为所有写入和读取的必需领域边界 | A | 自动提取、冲突检测、BM25、管理页 |
+| A | `003-memory-storage-reliability`（已完成） | 版本化事务记录、跨进程单写者、显式迁移和损坏恢复 | 无 | 自动提取、冲突模型、管理页、召回算法 |
+| B | `004-memory-scoped-records`（已完成） | Trusted Owner/authority/scope、Memory Observation、kind 与有效时间成为所有写入和读取的必需领域边界 | A | 自动提取、冲突检测、BM25、管理页 |
 | C | `005-memory-candidate-extraction`（已完成） | 回复后自动候选提取 Provider；候选永不自动批准 | A、B | 冲突替代、候选编辑、定时整合 |
 | D | `006-memory-conflict-supersession`（已完成） | 冲突/近重复检测与 Owner 决策后的墓碑、`supersedes` 链 | A、B、C | 自动合并、批量 UI、向量召回 |
 | E | `007-memory-candidate-governance`（已完成） | 候选编辑、合并和不含敏感载荷的操作审计 | A、D | 完整搜索页、召回算法 |

@@ -10,4 +10,3 @@
 - Derived View Provider 只收到 ID；删除/失效失败或超时返回 `stale` receipt，Archive 回查仍阻止投影。
 - 其他 Owner、authority、scope 和 confidential gate 不能被 lifecycle 输入扩大。
 - 定向测试、重开 replay、built smoke、publication audit 与 `git diff --check` 通过。
-

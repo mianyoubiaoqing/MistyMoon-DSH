@@ -38,7 +38,11 @@ MistyMoon 不是单纯的聊天 UI 或通用记忆数据库，而是 DSH 上的 
 - 召回内容以带来源的 DSH 消息写入会话，因此实际发送给模型的上下文可以从会话日志重建。
 - 支持列出、纠正和遗忘记忆；旧值保留在审计历史中，但不会继续参与召回。
 - 支持候选记忆的提议、查看、批准和拒绝。候选内容只有经过主人批准后才会成为正式长期记忆。
-- 设置页提供候选记忆审核区域；待审核和已拒绝的候选不会进入模型上下文。
+- 回复后候选抽取通过默认无 Provider 的受治理 seam 运行；抽取只生成 pending candidate，超时、取消、无效结果或 Provider 失败不影响 Owner 回复，也不会自动批准。
+- 冲突与近重复检测提供可解释关系；存在冲突时必须由 Owner 选择 keep-both 或 supersede。候选编辑、合并和替代都是追加式事务，并保留不含私密正文的审计与完整 lineage。
+- 设置页提供独立 Memory 管理页，支持搜索、筛选、来源查看、冲突决策、编辑、合并和逐项报告结果的批量审核；待审核、已拒绝和越权内容不会进入模型上下文。
+- 默认召回使用本地可解释 BM25、Archive 权威回查、结果/字符预算和模型可见 receipt。PageIndex 与 graph-relationship Adapter 可用于本地 shadow 或 Owner-confirmed opt-in，但默认关闭；RC.6 禁止远端 projection。
+- 生命周期先生成无副作用 Plan，再由 Owner 确认整合、衰减、归档或恢复。摘要保留完整叶子来源，任一来源失效即停止召回；衰减只影响冷热层和排序，归档不物理删除且可恢复。
 
 ### 本机设置页
 
@@ -46,7 +50,7 @@ MistyMoon 不是单纯的聊天 UI 或通用记忆数据库，而是 DSH 上的 
 - 可编辑人格、关系规则、参考对话、回复预算和单次记忆召回上限。
 - 可导入 Character Card V1/V2/V3 JSON、PNG/APNG 和 CHARX，在字段映射与人格差异预览后保存为未发布草稿。
 - 角色卡的系统提示词和场景映射默认关闭；Creator Notes、问候、世界书、扩展和未知字段不会自动进入人格或模型上下文。
-- 可在页面中批准或拒绝候选记忆。
+- 可在独立 Memory 页搜索和筛选正式/候选记录，查看来源与无正文审计，并执行批准、拒绝、冲突决策、编辑、合并和批量审核。
 - 可从 DSH 当前已注册、且支持 `max` reasoning 的模型目录中选择后续 Work child 使用的 provider/model。MistyMoon 只保存引用，不复制 API Key、Base URL、余额或账号配置；非默认 exact pair 会明确标为 experimental，并以保存操作作为 Owner 确认。
 - Host API 只允许本机回环来源访问，避免私有人格和记忆通过普通远程页面暴露。
 
@@ -214,14 +218,14 @@ pnpm check
 - [x] 人格草稿、精确预览、显式发布、并发覆盖保护和版本回滚
 - [x] Character Card V1/V2/V3 JSON 的不可信输入解析、未知字段保留和私有草稿模型
 - [x] Character Card 草稿预览、字段映射 UI，以及带大小/路径/压缩比限制的 PNG/APNG、CHARX 容器解析；详见 [导入设计](docs/persona-import.md)
-- [ ] 自动候选提取 Provider：对回复后的稳定事实生成候选，但不自动批准
-- [ ] 冲突检测与替代链：发现矛盾时要求主人选择，接受新值后以墓碑和 `supersedes` 保留旧值
-- [ ] 记忆整合、衰减、归档与恢复
-- [ ] 专用记忆管理页：搜索、筛选、批量审核和来源查看
+- [x] 自动候选提取 Provider seam：对回复后的稳定事实生成 pending 候选但不自动批准；RC.6 不捆绑或启用远端 Provider
+- [x] 冲突检测与替代链：发现矛盾时要求主人选择，接受新值后以墓碑和 `supersedes` 保留旧值
+- [x] 候选编辑、合并、批量治理和无私密载荷操作审计
+- [x] 记忆整合、衰减、归档与恢复：Owner-confirmed Plan、完整 summary lineage、Recall Tier 和无物理删除恢复
+- [x] 专用记忆管理页：搜索、筛选、批量审核、来源查看和冲突决策
+- [x] 可解释 BM25 Retrieval、Archive 权威回查、预算/receipt、中性中文 RP 评测，以及默认关闭的 PageIndex/graph shadow/opt-in Adapter
 - [x] 为记忆日志增加 v2 事务格式、跨进程 lease、显式迁移、checkpoint、quarantine 和尾部损坏恢复工具
 - [x] Scoped Memory Records：可信 Owner/authority/scope、Observation、memory kind、有效时间、跨域隔离和 confidential 双门硬过滤
-- [ ] BM25、PageIndex 与图关系融合召回，以及可解释的召回结果
-- [ ] 候选记忆的编辑、合并和不含敏感载荷的操作审计
 
 ### P1：RP Agent、体验模式与通信
 

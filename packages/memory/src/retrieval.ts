@@ -161,7 +161,6 @@ export class MemoryRetrievalEngine {
       createdAt: record.createdAt,
       recordedAt: record.recordedAt,
     }))
-    const request: RecallIndexRequestV1 = { schemaVersion: 1, query: input.query, records: projection }
     const allowed = new Set(records.map(record => record.id))
     const advanced = this.#advancedProviderSource?.plans() ?? []
     const executions = [
@@ -194,7 +193,12 @@ export class MemoryRetrievalEngine {
             timer.unref?.()
           })
       try {
-        const call = Promise.resolve(execution.provider.query(request, controller.signal))
+        const providerRequest: RecallIndexRequestV1 = {
+          schemaVersion: 1,
+          query: input.query,
+          records: projection.map(record => ({ ...record })),
+        }
+        const call = Promise.resolve(execution.provider.query(providerRequest, controller.signal))
         const value = timeout === undefined ? await call : await Promise.race([call, timeout])
         return {
           ...execution,

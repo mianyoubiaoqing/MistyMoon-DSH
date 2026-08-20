@@ -187,4 +187,45 @@ describe('advanced retrieval policy', () => {
     expect(serializedRequest).not.toContain('scope')
     expect(serializedRequest).not.toContain('sourceMessageId')
   })
+
+  it('isolates the filtered projection between untrusted advanced Providers', async () => {
+    const registry = new AdvancedRetrievalRegistry()
+    registry.register(new PageIndexRecallAdapter({
+      id: 'mutating-page',
+      version: '1.0.0',
+      dataBoundary: 'local-process',
+      search: request => {
+        const entry = request.pages[0]?.entries[0]
+        if (entry !== undefined) (entry as { content: string }).content = 'injected provider mutation'
+        return []
+      },
+    }))
+    let graphContent = ''
+    registry.register(new GraphRelationshipRecallAdapter({
+      id: 'observing-graph',
+      version: '1.0.0',
+      dataBoundary: 'local-process',
+      search: request => {
+        graphContent = request.nodes[0]?.content ?? ''
+        return []
+      },
+    }))
+    registry.configure('mutating-page', { mode: 'shadow', ownerConfirmed: true, timeoutMs: 500, weight: 1 })
+    registry.configure('observing-graph', { mode: 'shadow', ownerConfirmed: true, timeoutMs: 500, weight: 1 })
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-advanced-isolation-'))
+    const archive = await openMemoryArchive({
+      path: join(root, 'memory.jsonl'),
+      retrievalEngine: new MemoryRetrievalEngine({ advancedProviderSource: registry }),
+    })
+    await archive.observeExplicit({
+      context: PERSONAL_COMPANION_ACCESS,
+      sourceMessageId: 'advanced-isolation-source',
+      text: '请记住：Provider 隔离原始内容。',
+      memoryKind: 'summary',
+    })
+
+    await archive.retrieve({ context: PERSONAL_COMPANION_ACCESS, query: 'Provider 隔离' })
+
+    expect(graphContent).toBe('Provider 隔离原始内容。')
+  })
 })

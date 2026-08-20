@@ -97,9 +97,15 @@ Memory 使用 v2 事务式 JSONL 档案：每个新 candidate/record 都属于�
 
 旧 domain schema v1（无论是原始 storage v1 还是已包进 storage v2）以 `scope-migration-required` fail closed。Maintenance plan 必须显式绑定 Owner、authority、目标 scope、默认 kind、`legacy-created-at` 策略、exact digest、过期 token 和 exact backup，apply 才会一次性生成 Observation 与 scoped domain v2；正文不参与字段推断。非法 JSON、摘要链、领域状态或 checkpoint 进入 `quarantined`。尾部恢复仍只允许裁剪最后完整事务之后的 partial tail，内部损坏只生成 `restore-required`，并提供只读 rollback rehearsal。自动命名 backup 达到保留上限时拒绝继续创建，不自动删除。Windows 采用 Owner 已接受的文件 fsync + atomic rename + reopen 契约；Node 不支持目录 fsync，因此报告相应的断电窗口而不虚构更强 durability。
 
-自动召回挂在 `agent/pre-step`，由 MistyMoon 从 Owner Eligibility 构造可信 access context，先按 confirmed、Owner、authority、exact scope、有效时间与 confidential 双门做硬过滤，再排序并把结果作为带来源的 DSH 消息写入会话。工具参数不包含 Owner、scope 或 disclosure override；Settings UI 只消费 Memory 提供的 loopback governance service，不读取档案或复制过滤规则。
+自动召回挂在 `agent/pre-step`，由 MistyMoon 从 Owner Eligibility 构造可信 access context，先按 confirmed、Owner、authority、exact scope、有效时间、summary source lineage、Recall Tier 与 confidential 双门做硬过滤，再交给本地 BM25 排序，并把带 memory/source/provider receipt 的结果作为 DSH 消息写入会话。工具参数不包含 Owner、scope 或 disclosure override；Settings UI 只消费 Memory 提供的 loopback governance service，不读取档案或复制过滤规则。
 
-长期方向是定义稳定的 `MemoryProvider` 接口：
+候选抽取、冲突评估和候选编辑/合并都停在 Memory 治理层：抽取 Provider 只接收顶层 Owner 已选择 evidence，输出严格 pending draft；冲突 evaluator 只产生解释，Owner 决策后才原子写入 replacement/tombstone；专用管理页通过 context-free loopback facade 完成搜索、筛选、来源查看、批量审核和无正文审计。Provider 失败不能使 Owner turn 失败或绕过 candidate review。
+
+Retrieval Engine 只向索引 Provider 提供已经硬过滤的最小 record projection，Provider 只返回 ID/score/reason，正文必须回查 Archive。内置 BM25 始终是 baseline；PageIndex 与 graph Adapter 注册后仍为 disabled，本地 shadow 只产生无正文比较，opt-in 必须 Owner 确认，remote boundary 在 RC.6 fail closed。每个请求在最终融合后应用字符/数量预算及 lifecycle rank multiplier。
+
+Memory Lifecycle 先返回进程内不可变 Plan，Owner 明确确认后才追加一个 consolidation/decay/archive/restore 事务。Consolidated Summary 保存扁平叶子 `sourceMemoryIds`，来源 forgotten、superseded、过期或不可回查时自动退出召回；decay 只改变 cold tier 与排序权重，并排除 boundary、commitment、state；archive 保留 confirmed 事实与审计，restore 可恢复。Derived View Provider 在提交后只收到受影响 ID，失败或超时仅返回 stale receipt，Archive 回查仍是权威。
+
+当前已把外部能力拆成稳定、窄化的 Candidate Extraction、Retrieval、Advanced Retrieval 与 Derived View invalidation seam：
 
 ```text
 MistyMoon 治理层
@@ -112,7 +118,7 @@ MistyMoon 治理层
    └─ Mem0（候选，独立服务）
 ```
 
-Provider 可以负责持久化、全文检索、图检索和排序，但不能拥有产品级身份或审核策略。切换 Provider 必须保持相同的规范化事实、来源、可见性和修订语义。
+外部 Provider 可以负责候选抽取或可重建的全文/图检索与排序，但不能拥有 Archive 持久化、产品级身份、审核、事实状态或删除策略。切换 Provider 必须保持相同的规范化事实、来源、可见性、修订与生命周期语义。
 
 ## Noema 决策
 
