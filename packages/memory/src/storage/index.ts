@@ -37,9 +37,10 @@ export interface MemoryCandidateResolutionEvent {
   scope: MemoryScopeV1
   observationId: string
   candidateId: string
-  decision: 'approved' | 'rejected'
+  decision: 'approved' | 'rejected' | 'superseded'
   sourceMessageId: string
   memoryId?: string
+  replacementCandidateId?: string
 }
 
 export type MemoryDomainEvent = MemoryObservationV1 | MemoryRecord | MemoryCandidate | MemoryForgottenEvent | MemoryCandidateResolutionEvent
@@ -495,8 +496,10 @@ function parseDomainEvent(value: unknown, line: number, offset: number): MemoryD
       exactDomainKeys(entry, [
         'schemaVersion', 'event', 'id', 'createdAt', 'ownerId', 'scope', 'observationId', 'candidateId',
         'decision', 'sourceMessageId',
-      ], ['memoryId'])
-      if (entry.decision !== 'approved' && entry.decision !== 'rejected') throw new Error('unsupported decision')
+      ], ['memoryId', 'replacementCandidateId'])
+      if (entry.decision !== 'approved' && entry.decision !== 'rejected' && entry.decision !== 'superseded') {
+        throw new Error('unsupported decision')
+      }
       return {
         schemaVersion: 2,
         event: 'candidate-resolution',
@@ -509,6 +512,9 @@ function parseDomainEvent(value: unknown, line: number, offset: number): MemoryD
         decision: entry.decision,
         sourceMessageId: requiredString(entry.sourceMessageId),
         ...(entry.memoryId === undefined ? {} : { memoryId: requiredString(entry.memoryId) }),
+        ...(entry.replacementCandidateId === undefined ? {} : {
+          replacementCandidateId: requiredString(entry.replacementCandidateId),
+        }),
       }
     }
     if (entry.event !== undefined && entry.event !== 'candidate') {
@@ -537,8 +543,16 @@ function parseDomainEvent(value: unknown, line: number, offset: number): MemoryD
       sourceMessageId: requiredString(entry.sourceMessageId),
     }
     if (entry.event === 'candidate') {
-      exactDomainKeys(entry, [...commonRequired, 'event'], ['validFrom', 'validTo', 'extraction'])
+      exactDomainKeys(entry, [...commonRequired, 'event'], ['validFrom', 'validTo', 'extraction', 'sourceCandidateIds'])
       if (entry.status !== 'pending') throw new Error('candidate must start pending')
+      let sourceCandidateIds: string[] | undefined
+      if (entry.sourceCandidateIds !== undefined) {
+        if (!Array.isArray(entry.sourceCandidateIds) || entry.sourceCandidateIds.length === 0) {
+          throw new Error('candidate source lineage must be a non-empty array')
+        }
+        sourceCandidateIds = entry.sourceCandidateIds.map(requiredString)
+        if (new Set(sourceCandidateIds).size !== sourceCandidateIds.length) throw new Error('candidate source lineage must be unique')
+      }
       let extraction: MemoryCandidate['extraction']
       if (entry.extraction !== undefined) {
         const value = record(entry.extraction)
@@ -551,7 +565,13 @@ function parseDomainEvent(value: unknown, line: number, offset: number): MemoryD
           receipt: parseCandidateExtractionReceiptV1(value.receipt),
         }
       }
-      return { ...common, event: 'candidate', status: 'pending', ...(extraction === undefined ? {} : { extraction }) }
+      return {
+        ...common,
+        event: 'candidate',
+        status: 'pending',
+        ...(sourceCandidateIds === undefined ? {} : { sourceCandidateIds }),
+        ...(extraction === undefined ? {} : { extraction }),
+      }
     }
     if (entry.event !== undefined) throw new FormatIssue({ code: 'unknown-required-event', line, offset })
     exactDomainKeys(entry, commonRequired, ['validFrom', 'validTo', 'sourceCandidateId', 'supersedesMemoryId'])
@@ -587,6 +607,7 @@ function cloneMemory(memory: MemoryRecord): MemoryRecord {
 function cloneCandidate(candidate: MemoryCandidate): MemoryCandidate {
   return {
     ...candidate,
+    ...(candidate.sourceCandidateIds === undefined ? {} : { sourceCandidateIds: [...candidate.sourceCandidateIds] }),
     ...(candidate.extraction === undefined ? {} : {
       extraction: {
         ...candidate.extraction,
@@ -684,6 +705,13 @@ function foldEvent(
   }
   if ('event' in event && event.event === 'candidate') {
     const { sourceKey } = eventObservation(state, event, line, offset)
+    if (event.sourceCandidateIds !== undefined) {
+      for (const sourceCandidateId of event.sourceCandidateIds) {
+        const source = state.candidateById.get(sourceCandidateId)
+        if (source === undefined || source.status !== 'pending' || source.ownerId !== event.ownerId
+          || !memoryScopeEquals(source.scope, event.scope)) issue('invalid-state-transition', line, offset)
+      }
+    }
     const existing = state.sources.get(sourceKey)
     if (existing === undefined) {
       state.sources.set(sourceKey, {
@@ -714,11 +742,21 @@ function foldEvent(
       }
       reserveSource(state, sourceKey, source, line, offset, true)
       candidate.status = 'approved'
-    } else {
+    } else if (event.decision === 'rejected') {
       reserveSource(state, sourceKey, {
         kind: 'reject', transactionId, candidateId: candidate.id,
       }, line, offset)
       candidate.status = 'rejected'
+    } else {
+      const replacement = event.replacementCandidateId === undefined
+        ? undefined
+        : state.candidateById.get(event.replacementCandidateId)
+      const source = state.sources.get(sourceKey)
+      if (replacement === undefined || replacement.status !== 'pending'
+        || !replacement.sourceCandidateIds?.includes(candidate.id)
+        || source?.kind !== 'candidate' || source.transactionId !== transactionId
+        || source.candidateId !== replacement.id) issue('invalid-state-transition', line, offset)
+      candidate.status = 'superseded'
     }
     return
   }

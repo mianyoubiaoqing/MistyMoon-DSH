@@ -20,8 +20,11 @@ import type {
   MemoryCandidateDecision,
   MemoryCandidateList,
   MemoryCandidateProposal,
+  MemoryCandidateRevision,
   MemoryForget,
   MemoryGovernanceService,
+  MemoryGovernanceAuditEntryV1,
+  MemoryGovernanceAuditList,
   MemoryList,
   MemoryRecall,
   MemoryRecord,
@@ -570,6 +573,108 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     return candidates
   }
 
+  async #reviseCandidates(input: MemoryCandidateRevision, mode: 'edit' | 'merge'): Promise<MemoryCandidate> {
+    const context = this.#context(input.context)
+    const candidateIds = [...input.candidateIds]
+    if ((mode === 'edit' && candidateIds.length !== 1) || (mode === 'merge' && candidateIds.length < 2)) {
+      throw new TypeError(mode === 'edit' ? 'candidate edit requires exactly one source' : 'candidate merge requires at least two sources')
+    }
+    if (new Set(candidateIds).size !== candidateIds.length) throw new TypeError('candidate revision sources must be unique')
+    const content = input.content.trim()
+    if (content === '') throw new TypeError('candidate revision content must be non-empty')
+    const revised = await this.storage.transact(state => {
+      const sourceKey = this.#sourceKey(context, 'governance-operation', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
+      if (used !== undefined) {
+        const existing = used.candidateId === undefined ? undefined : state.candidateById.get(used.candidateId)
+        if (used.kind === 'candidate' && existing !== undefined
+          && JSON.stringify(existing.sourceCandidateIds) === JSON.stringify(candidateIds)
+          && existing.content === content && existing.visibility === input.visibility
+          && existing.memoryKind === input.memoryKind
+          && (input.recordedAt === undefined || existing.recordedAt === input.recordedAt)
+          && existing.validFrom === input.validFrom && existing.validTo === input.validTo) {
+          return { events: [], result: existing }
+        }
+        return conflict(input.sourceMessageId)
+      }
+      const sources = candidateIds.map(id => this.#candidate(state, id, context))
+      if (sources.some(candidate => candidate.status !== 'pending')) throw new Error('candidate revision sources must all be pending')
+      const timestamp = this.now().toISOString()
+      const validity = validateMemoryValidity({
+        recordedAt: input.recordedAt ?? timestamp,
+        ...(input.validFrom === undefined ? {} : { validFrom: input.validFrom }),
+        ...(input.validTo === undefined ? {} : { validTo: input.validTo }),
+      })
+      const observation = this.#observation(context, 'governance-operation', input.sourceMessageId, timestamp)
+      const candidate: MemoryCandidate = {
+        schemaVersion: 2,
+        event: 'candidate',
+        id: this.createId(),
+        ownerId: context.ownerId,
+        scope: context.scope,
+        observationId: observation.id,
+        memoryKind: input.memoryKind,
+        createdAt: timestamp,
+        ...validity,
+        content,
+        visibility: input.visibility,
+        sourceMessageId: input.sourceMessageId,
+        sourceCandidateIds: candidateIds,
+        status: 'pending',
+      }
+      const resolutions: MemoryCandidateResolutionEvent[] = sources.map(source => ({
+        schemaVersion: 2,
+        event: 'candidate-resolution',
+        id: this.createId(),
+        createdAt: timestamp,
+        ownerId: context.ownerId,
+        scope: context.scope,
+        observationId: observation.id,
+        candidateId: source.id,
+        decision: 'superseded',
+        sourceMessageId: input.sourceMessageId,
+        replacementCandidateId: candidate.id,
+      }))
+      for (const source of sources) source.status = 'superseded'
+      return { events: [observation, candidate, ...resolutions], result: candidate }
+    })
+    for (const candidateId of candidateIds) {
+      for (const reference of this.#candidateReferences.get(candidateId) ?? []) reference.status = 'superseded'
+    }
+    this.#rememberCandidateReference(revised)
+    return revised
+  }
+
+  editCandidate(input: MemoryCandidateRevision): Promise<MemoryCandidate> {
+    return this.#reviseCandidates(input, 'edit')
+  }
+
+  mergeCandidates(input: MemoryCandidateRevision): Promise<MemoryCandidate> {
+    return this.#reviseCandidates(input, 'merge')
+  }
+
+  listGovernanceAudit(input: MemoryGovernanceAuditList): MemoryGovernanceAuditEntryV1[] {
+    const context = this.#context(input.context)
+    const state = this.storage.snapshot()
+    if (state === undefined) return []
+    const limit = input.limit ?? 100
+    if (!Number.isSafeInteger(limit) || limit < 0 || limit > 1_000) throw new TypeError('governance audit limit must be from 0 through 1000')
+    return state.candidates
+      .filter(candidate => candidate.sourceCandidateIds !== undefined
+        && this.#sameDomain(state, candidate, context)
+        && canDiscloseMemory(candidate.visibility, context))
+      .toSorted((left, right) => right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id))
+      .slice(0, limit)
+      .map(candidate => ({
+        schemaVersion: 1,
+        action: candidate.sourceCandidateIds!.length === 1 ? 'candidate-edited' : 'candidates-merged',
+        sourceCandidateIds: [...candidate.sourceCandidateIds!],
+        resultCandidateId: candidate.id,
+        createdAt: candidate.createdAt,
+        sourceMessageId: candidate.sourceMessageId,
+      }))
+  }
+
   assessCandidate(input: MemoryCandidateAssessment): MemoryConflictAssessmentV1 {
     const context = this.#context(input.context)
     const state = this.storage.snapshot()
@@ -755,7 +860,8 @@ const memoryCandidateValueSchema = {
     content: { type: 'string', required: true },
     visibility: { type: 'string', required: true, enum: ['personal', 'confidential'] },
     sourceMessageId: { type: 'string', required: true },
-    status: { type: 'string', required: true, enum: ['pending', 'approved', 'rejected'] },
+    sourceCandidateIds: { type: 'array', items: { type: 'string' } },
+    status: { type: 'string', required: true, enum: ['pending', 'approved', 'rejected', 'superseded'] },
     extraction: {
       type: 'object',
       additionalProperties: false,
@@ -1215,6 +1321,9 @@ function memoryGovernanceService(
   return {
     listCandidates: input => archive.listCandidates({ context, ...input }),
     assessCandidate: input => archive.assessCandidate({ context, ...input }),
+    editCandidate: input => archive.editCandidate({ context, ...input }),
+    mergeCandidates: input => archive.mergeCandidates({ context, ...input }),
+    listGovernanceAudit: input => archive.listGovernanceAudit({ context, ...input }),
     approveCandidate: input => archive.approveCandidate({ context, ...input }),
     rejectCandidate: input => archive.rejectCandidate({ context, ...input }),
   }

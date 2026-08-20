@@ -22,6 +22,8 @@ Post-response candidate extraction now uses a single-active Provider registry. T
 
 Pending candidates can be assessed against active records through a deterministic, explainable conflict seam. Duplicate/conflict results never mutate governance state. Approval fails closed until the Owner chooses `keep-both` or selects an assessed active memory to supersede; supersession appends the confirmed replacement, candidate resolution, and old-version tombstone in one transaction.
 
+Candidate edits and merges are append-only governance operations. They create a new pending candidate with complete `sourceCandidateIds` lineage and supersede the source candidates in the same transaction. A payload-free audit projection reports only action, IDs, source request, and time; it never includes candidate content, visibility, or Provider receipts.
+
 Current limitations:
 
 - The current `local-dsh-host-rpc` authority supports only the default loopback Web single-Owner deployment. Other channels remain fail-closed until they supply an authenticated authority adapter.

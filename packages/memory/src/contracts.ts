@@ -36,7 +36,8 @@ export interface MemoryRecord extends ScopedMemoryFields {
 /** Owner-reviewable scoped memory that is never recalled before approval. */
 export interface MemoryCandidate extends ScopedMemoryFields {
   event: 'candidate'
-  status: 'pending' | 'approved' | 'rejected'
+  status: 'pending' | 'approved' | 'rejected' | 'superseded'
+  sourceCandidateIds?: string[]
   extraction?: {
     schemaVersion: 1
     providerId: string
@@ -87,6 +88,32 @@ export interface MemoryCandidateAssessment extends TrustedMemoryRequest {
 /** Query over the candidate review queue in one exact Owner/scope. */
 export interface MemoryCandidateList extends TrustedMemoryRequest {
   includeResolved?: boolean
+  limit?: number
+}
+
+/** Owner-authored complete replacement draft for candidate edit or merge. */
+export interface MemoryCandidateRevision extends TrustedMemoryRequest {
+  candidateIds: readonly string[]
+  sourceMessageId: string
+  content: string
+  visibility: MemoryVisibility
+  memoryKind: MemoryKind
+  recordedAt?: string
+  validFrom?: string
+  validTo?: string
+}
+
+/** Payload-free audit row derived from immutable candidate lineage. */
+export interface MemoryGovernanceAuditEntryV1 {
+  schemaVersion: 1
+  action: 'candidate-edited' | 'candidates-merged'
+  sourceCandidateIds: readonly string[]
+  resultCandidateId: string
+  createdAt: string
+  sourceMessageId: string
+}
+
+export interface MemoryGovernanceAuditList extends TrustedMemoryRequest {
   limit?: number
 }
 
@@ -158,6 +185,9 @@ export interface CompanionMemoryArchive {
   proposeExtracted(input: ExtractedMemoryCandidateBatch): Promise<MemoryCandidate[]>
   listCandidates(input: MemoryCandidateList): MemoryCandidate[]
   assessCandidate(input: MemoryCandidateAssessment): MemoryConflictAssessmentV1
+  editCandidate(input: MemoryCandidateRevision): Promise<MemoryCandidate>
+  mergeCandidates(input: MemoryCandidateRevision): Promise<MemoryCandidate>
+  listGovernanceAudit(input: MemoryGovernanceAuditList): MemoryGovernanceAuditEntryV1[]
   approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord>
   rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate>
 }
@@ -166,6 +196,9 @@ export interface CompanionMemoryArchive {
 export interface MemoryGovernanceService {
   listCandidates(input?: Omit<MemoryCandidateList, 'context'>): MemoryCandidate[]
   assessCandidate(input: Omit<MemoryCandidateAssessment, 'context'>): MemoryConflictAssessmentV1
+  editCandidate(input: Omit<MemoryCandidateRevision, 'context'>): Promise<MemoryCandidate>
+  mergeCandidates(input: Omit<MemoryCandidateRevision, 'context'>): Promise<MemoryCandidate>
+  listGovernanceAudit(input?: Omit<MemoryGovernanceAuditList, 'context'>): MemoryGovernanceAuditEntryV1[]
   approveCandidate(input: Omit<MemoryCandidateDecision, 'context'>): Promise<MemoryRecord>
   rejectCandidate(input: Omit<MemoryCandidateDecision, 'context'>): Promise<MemoryCandidate>
 }
