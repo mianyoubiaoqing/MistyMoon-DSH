@@ -65,6 +65,10 @@
       "types": "./packages/memory/lib/advanced-retrieval.d.ts",
       "default": "./packages/memory/lib/advanced-retrieval.js"
     },
+    "./memory/lifecycle": {
+      "types": "./packages/memory/lib/lifecycle.d.ts",
+      "default": "./packages/memory/lib/lifecycle.js"
+    },
     "./memory/legacy-migration": {
       "types": "./packages/memory/lib/legacy-migration.d.ts",
       "default": "./packages/memory/lib/legacy-migration.js"

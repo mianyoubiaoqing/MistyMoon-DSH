@@ -18,6 +18,10 @@ Recall hard-filters confirmed state, exact Owner, authority, exact scope, curren
 
 Optional PageIndex and graph-relationship Adapters consume only that already-filtered projection. Registration is disabled by default; local-process `shadow` produces payload-free latency/overlap receipts without changing BM25 items, while `opt-in` requires Owner confirmation and still returns only IDs/scores/reasons for Archive backcheck. Remote advanced retrieval is fail-closed for RC.6, and timeout, cancellation, exceptions, invalid schemas, and unknown IDs preserve the BM25 baseline.
 
+Lifecycle changes begin as immutable, side-effect-free plans and require explicit Owner confirmation before one append-only transaction. Consolidation creates a governed summary with complete leaf `sourceMemoryIds`; if any source is forgotten, superseded, expired, or unavailable, Archive backcheck removes the summary from recall. Decay changes only the replay-derived Recall Tier and final rank multiplier, never content or fact status, and excludes boundary, commitment, and state memories. Archive keeps the confirmed record and audit history in a recoverable `archived` tier; restore returns it to hot/cold recall without physical deletion.
+
+After a lifecycle commit, disposable Derived View Providers receive only affected memory IDs. Failed or timed-out invalidation is reported as a payload-free stale receipt and never rolls back Archive truth or weakens authoritative recall filtering.
+
 On Windows, Node can fsync archive and backup files but returns `EPERM` for directory-handle fsync. Maintenance therefore reports `directoryDurability: unsupported-platform` after file fsync, atomic rename, checkpoint publication, and full reopen verification. A sudden power loss during the narrow rename window may require restoring the exact backup; ordinary process failure and partial writes remain fail-closed.
 
 Post-response candidate extraction now uses a single-active Provider registry. The Provider receives only authenticated Owner evidence selected from the completed top-level turn, returns strict untrusted drafts, and cannot access the Archive. Memory atomically records every source batch as pending with a provider receipt; failures are bounded and cannot fail the Owner turn. No extraction Provider is bundled or enabled by default. A future model-backed Adapter must run through a separately logged DSH Session and return its request/response receipt.
@@ -33,4 +37,5 @@ Current limitations:
 - The current `local-dsh-host-rpc` authority supports only the default loopback Web single-Owner deployment. Other channels remain fail-closed until they supply an authenticated authority adapter.
 - The extraction seam and post-response consumer are active, but no local-model or remote Provider is bundled; candidates can still be proposed through the governed DSH tool.
 - Recall defaults to local BM25. PageIndex and graph Adapters are available but disabled; remote engines, embeddings, and reranking are not enabled by this baseline.
+- Lifecycle plans are process-local confirmation objects; after a restart the Owner must create a fresh plan against the replayed Archive state.
 - Imported batches do not yet have a rollback command. Individual imported memories remain forgettable through the normal append-only tool.

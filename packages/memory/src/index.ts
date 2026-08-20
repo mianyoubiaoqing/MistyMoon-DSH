@@ -29,6 +29,10 @@ import type {
   MemoryGovernanceAuditList,
   MemoryManagementQueryV1,
   MemoryManagementSnapshotV1,
+  MemoryLifecycleApplyRequestV1,
+  MemoryLifecycleApplyResultV1,
+  MemoryLifecyclePlanRequestV1,
+  MemoryLifecyclePlanV1,
   MemoryList,
   MemoryRecall,
   MemoryRecallSnapshotV1,
@@ -46,6 +50,7 @@ import {
   type CandidateExtractionRequestV1,
 } from './candidate-extraction.js'
 import { AdvancedRetrievalRegistry } from './advanced-retrieval.js'
+import { DerivedMemoryViewRegistry, type DerivedMemoryViewInvalidator } from './lifecycle.js'
 import {
   DeterministicMemoryConflictEvaluator,
   parseMemoryConflictRelationships,
@@ -72,6 +77,7 @@ import {
   type FoldedMemoryState,
   type MemoryCandidateResolutionEvent,
   type MemoryForgottenEvent,
+  type MemoryLifecycleEvent,
   type SourceUse,
 } from './storage/index.js'
 
@@ -80,6 +86,7 @@ export * from './candidate-extraction.js'
 export * from './conflict.js'
 export * from './retrieval.js'
 export * from './advanced-retrieval.js'
+export * from './lifecycle.js'
 export * from './domain.js'
 export * from './runtime-settings.js'
 
@@ -137,6 +144,8 @@ declare module '@deepseek-ai/cordis' {
     mistymoonMemoryCandidateExtraction: CandidateExtractionRegistry
     /** Optional advanced retrieval registry; all newly registered Adapters remain disabled. */
     mistymoonMemoryAdvancedRetrieval: AdvancedRetrievalRegistry
+    /** Payload-free invalidation registry for disposable derived memory views. */
+    mistymoonMemoryDerivedViews: DerivedMemoryViewRegistry
   }
 }
 
@@ -154,6 +163,8 @@ export interface OpenMemoryArchiveOptions {
   conflictEvaluator?: MemoryConflictEvaluator
   /** Optional retrieval engine seam; defaults to local BM25 only. */
   retrievalEngine?: MemoryRetrievalEngine
+  /** Optional ID-only invalidation seam for disposable indexes and summaries. */
+  derivedViewInvalidator?: DerivedMemoryViewInvalidator
 }
 
 function explicitContent(text: string): string | undefined {
@@ -168,6 +179,16 @@ function conflict(sourceMessageId: string): never {
   )
 }
 
+function cloneLifecyclePlan(plan: MemoryLifecyclePlanV1): MemoryLifecyclePlanV1 {
+  if (plan.action.kind === 'consolidate') {
+    return { ...plan, action: { ...plan.action, sourceMemoryIds: [...plan.action.sourceMemoryIds] } }
+  }
+  if (plan.action.kind === 'decay') {
+    return { ...plan, action: { ...plan.action, changes: plan.action.changes.map(change => ({ ...change })) } }
+  }
+  return { ...plan, action: { ...plan.action, memoryIds: [...plan.action.memoryIds] } }
+}
+
 function existingMemory(state: FoldedMemoryState, use: SourceUse): MemoryRecord {
   const memory = use.memoryId === undefined ? undefined : state.byId.get(use.memoryId)
   if (memory === undefined) throw new Error('memory archive source result is unavailable')
@@ -176,6 +197,11 @@ function existingMemory(state: FoldedMemoryState, use: SourceUse): MemoryRecord 
 
 class StorageBackedMemoryArchive implements CompanionMemoryArchive {
   readonly #candidateReferences = new Map<string, Set<MemoryCandidate>>()
+  readonly #lifecyclePlans = new Map<string, {
+    plan: MemoryLifecyclePlanV1
+    context: MemoryAccessContextV1
+    expected: ReadonlyMap<string, string>
+  }>()
 
   constructor(
     private readonly storage: MemoryArchiveStorage,
@@ -183,6 +209,7 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     private readonly now: () => Date,
     private readonly conflictEvaluator: MemoryConflictEvaluator,
     private readonly retrievalEngine: MemoryRetrievalEngine,
+    private readonly derivedViewInvalidator: DerivedMemoryViewInvalidator,
   ) {}
 
   inspection(): ArchiveInspection {
@@ -327,8 +354,15 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
   ): MemoryRecord[] {
     return state.records.filter(memory => memory.status === 'confirmed'
       && this.#sameDomain(state, memory, context)
+      && memory.lifecycle?.tier !== 'archived'
       && isMemoryCurrentlyValid(memory, at)
-      && canDiscloseMemory(memory.visibility, context))
+      && canDiscloseMemory(memory.visibility, context)
+      && (memory.sourceMemoryIds === undefined || memory.sourceMemoryIds.every(memoryId => {
+        const source = state.byId.get(memoryId)
+        return source !== undefined && source.status === 'confirmed'
+          && this.#sameDomain(state, source, context)
+          && isMemoryCurrentlyValid(source, at)
+      })))
   }
 
   recall(input: MemoryRecall): MemoryRecord[] {
@@ -763,6 +797,9 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
       ...('supersedesMemoryId' in entity && entity.supersedesMemoryId !== undefined
         ? { supersedesMemoryId: entity.supersedesMemoryId }
         : {}),
+      ...('sourceMemoryIds' in entity && entity.sourceMemoryIds !== undefined
+        ? { sourceMemoryIds: [...entity.sourceMemoryIds] }
+        : {}),
     }
   }
 
@@ -902,6 +939,233 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     return candidate
   }
 
+  planLifecycle(input: MemoryLifecyclePlanRequestV1): MemoryLifecyclePlanV1 {
+    const context = this.#context(input.context)
+    const state = this.storage.snapshot()
+    if (state === undefined) throw new MemoryArchiveError('memory archive is unavailable', 'MEMORY_ARCHIVE_QUARANTINED')
+    const createdAt = this.now().toISOString()
+    let plan: MemoryLifecyclePlanV1
+    let targets: MemoryRecord[]
+    if (input.action.kind === 'consolidate') {
+      const sourceMemoryIds = [...input.action.sourceMemoryIds]
+      if (sourceMemoryIds.length < 2 || sourceMemoryIds.length > 50
+        || new Set(sourceMemoryIds).size !== sourceMemoryIds.length) {
+        throw new TypeError('memory consolidation requires 2 through 50 unique sourceMemoryIds')
+      }
+      const content = input.action.content.trim()
+      if (content === '' || content.length > 8_000) {
+        throw new TypeError('memory consolidation content must contain 1 through 8000 characters')
+      }
+      targets = sourceMemoryIds.map(memoryId => this.#target(state, memoryId, context))
+      if (targets.some(memory => !canDiscloseMemory(memory.visibility, context))) {
+        throw new MemoryArchiveError('memory lifecycle source is unavailable under the disclosure policy', 'MEMORY_SCOPE_MISMATCH')
+      }
+      if (targets.some(memory => memory.status !== 'confirmed' || memory.sourceMemoryIds !== undefined
+        || !isMemoryCurrentlyValid(memory, createdAt))) {
+        throw new Error('memory consolidation sources must be active leaf memories')
+      }
+      plan = {
+        schemaVersion: 1,
+        id: this.createId(),
+        createdAt,
+        action: {
+          kind: 'consolidate',
+          sourceMemoryIds,
+          content,
+          visibility: targets.some(memory => memory.visibility === 'confidential') ? 'confidential' : 'personal',
+        },
+      }
+    } else if (input.action.kind === 'decay') {
+      const action = input.action
+      if (!Number.isSafeInteger(action.coldAfterDays)
+        || action.coldAfterDays < 1 || action.coldAfterDays > 3_650) {
+        throw new TypeError('memory decay coldAfterDays must be an integer from 1 through 3650')
+      }
+      if (!Number.isFinite(action.minimumRankMultiplier)
+        || action.minimumRankMultiplier < 0.1 || action.minimumRankMultiplier > 1) {
+        throw new TypeError('memory decay minimumRankMultiplier must be from 0.1 through 1')
+      }
+      const nowMs = new Date(createdAt).getTime()
+      const dayMs = 86_400_000
+      targets = state.records.filter(memory => memory.status === 'confirmed'
+        && this.#sameDomain(state, memory, context)
+        && canDiscloseMemory(memory.visibility, context)
+        && memory.lifecycle?.tier !== 'archived'
+        && isMemoryCurrentlyValid(memory, createdAt)
+        && memory.memoryKind !== 'boundary'
+        && memory.memoryKind !== 'commitment'
+        && memory.memoryKind !== 'state'
+        && Math.floor((nowMs - new Date(memory.recordedAt).getTime()) / dayMs) >= action.coldAfterDays)
+      const changes = targets.map(memory => {
+        const ageDays = Math.max(0, (nowMs - new Date(memory.recordedAt).getTime()) / dayMs)
+        const calculated = action.coldAfterDays / (ageDays + action.coldAfterDays)
+        return {
+          memoryId: memory.id,
+          toTier: 'cold' as const,
+          rankMultiplier: Math.max(action.minimumRankMultiplier, Math.min(1, calculated)),
+        }
+      }).filter(change => {
+        const memory = state.byId.get(change.memoryId)
+        const currentMultiplier = memory?.lifecycle?.rankMultiplier ?? 1
+        return change.rankMultiplier < currentMultiplier || memory?.lifecycle?.tier !== 'cold'
+      })
+      const changedIds = new Set(changes.map(change => change.memoryId))
+      targets = targets.filter(memory => changedIds.has(memory.id))
+      plan = {
+        schemaVersion: 1,
+        id: this.createId(),
+        createdAt,
+        action: { kind: 'decay', changes },
+      }
+    } else {
+      const memoryIds = [...input.action.memoryIds]
+      if (memoryIds.length < 1 || memoryIds.length > 100 || new Set(memoryIds).size !== memoryIds.length) {
+        throw new TypeError('memory archive/restore requires 1 through 100 unique memoryIds')
+      }
+      targets = memoryIds.map(memoryId => this.#target(state, memoryId, context))
+      if (targets.some(memory => !canDiscloseMemory(memory.visibility, context))) {
+        throw new MemoryArchiveError('memory lifecycle target is unavailable under the disclosure policy', 'MEMORY_SCOPE_MISMATCH')
+      }
+      if (input.action.kind === 'archive'
+        ? targets.some(memory => memory.status !== 'confirmed' || memory.lifecycle?.tier === 'archived')
+        : targets.some(memory => memory.status !== 'confirmed' || memory.lifecycle?.tier !== 'archived')) {
+        throw new Error(`memory ${input.action.kind} targets are not in the required recall tier`)
+      }
+      plan = {
+        schemaVersion: 1,
+        id: this.createId(),
+        createdAt,
+        action: { kind: input.action.kind, memoryIds },
+      }
+    }
+    this.#lifecyclePlans.set(plan.id, {
+      plan: cloneLifecyclePlan(plan),
+      context,
+      expected: new Map(targets.map(memory => [memory.id, JSON.stringify({
+        status: memory.status,
+        validFrom: memory.validFrom,
+        validTo: memory.validTo,
+        lifecycle: memory.lifecycle,
+      })])),
+    })
+    return cloneLifecyclePlan(plan)
+  }
+
+  async applyLifecycle(input: MemoryLifecycleApplyRequestV1): Promise<MemoryLifecycleApplyResultV1> {
+    if (!input.ownerConfirmed) throw new Error('Owner confirmation is required to apply a memory lifecycle plan')
+    if (input.sourceMessageId.trim() === '') throw new TypeError('memory lifecycle sourceMessageId must be non-empty')
+    const context = this.#context(input.context)
+    const pending = this.#lifecyclePlans.get(input.planId)
+    if (pending === undefined || pending.context.ownerId !== context.ownerId
+      || pending.context.authority !== context.authority
+      || !memoryScopeEquals(pending.context.scope, context.scope)) {
+      throw new Error('memory lifecycle plan is unavailable in the trusted Owner/scope')
+    }
+    const result = await this.storage.transact<MemoryLifecycleApplyResultV1>(state => {
+      const targetIds = pending.plan.action.kind === 'consolidate'
+        ? pending.plan.action.sourceMemoryIds
+        : pending.plan.action.kind === 'decay'
+          ? pending.plan.action.changes.map(change => change.memoryId)
+          : pending.plan.action.memoryIds
+      const targets = targetIds.map(memoryId => this.#target(state, memoryId, context))
+      for (const target of targets) {
+        const actual = JSON.stringify({
+          status: target.status,
+          validFrom: target.validFrom,
+          validTo: target.validTo,
+          lifecycle: target.lifecycle,
+        })
+        if (pending.expected.get(target.id) !== actual
+          || (pending.plan.action.kind === 'consolidate' && target.sourceMemoryIds !== undefined)) {
+          throw new Error('memory lifecycle plan is stale')
+        }
+      }
+      const timestamp = this.now().toISOString()
+      const observation = this.#observation(context, 'governance-operation', input.sourceMessageId, timestamp)
+      if (pending.plan.action.kind === 'decay') {
+        const events: MemoryLifecycleEvent[] = pending.plan.action.changes.map(change => ({
+          schemaVersion: 2,
+          event: 'lifecycle',
+          id: this.createId(),
+          createdAt: timestamp,
+          ownerId: context.ownerId,
+          scope: context.scope,
+          observationId: observation.id,
+          memoryId: change.memoryId,
+          action: 'decay',
+          tier: change.toTier,
+          rankMultiplier: change.rankMultiplier,
+          sourceMessageId: input.sourceMessageId,
+        }))
+        return {
+          events: events.length === 0 ? [] : [observation, ...events],
+          result: {
+            schemaVersion: 1 as const,
+            action: 'decay' as const,
+            affectedMemoryIds: pending.plan.action.changes.map(change => change.memoryId),
+          },
+        }
+      }
+      if (pending.plan.action.kind === 'archive' || pending.plan.action.kind === 'restore') {
+        const action = pending.plan.action.kind
+        const events: MemoryLifecycleEvent[] = targets.map(target => {
+          const currentMultiplier = target.lifecycle?.rankMultiplier ?? 1
+          return {
+            schemaVersion: 2,
+            event: 'lifecycle',
+            id: this.createId(),
+            createdAt: timestamp,
+            ownerId: context.ownerId,
+            scope: context.scope,
+            observationId: observation.id,
+            memoryId: target.id,
+            action,
+            tier: action === 'archive' ? 'archived' : currentMultiplier < 1 ? 'cold' : 'hot',
+            rankMultiplier: currentMultiplier,
+            sourceMessageId: input.sourceMessageId,
+          }
+        })
+        return {
+          events: [observation, ...events],
+          result: {
+            schemaVersion: 1 as const,
+            action,
+            affectedMemoryIds: targets.map(target => target.id),
+          },
+        }
+      }
+      if (pending.plan.action.kind !== 'consolidate') throw new Error('memory lifecycle action is unsupported')
+      const action = pending.plan.action
+      const memory: MemoryRecord = {
+        schemaVersion: 2,
+        id: this.createId(),
+        ownerId: context.ownerId,
+        scope: context.scope,
+        observationId: observation.id,
+        memoryKind: 'summary',
+        createdAt: timestamp,
+        recordedAt: timestamp,
+        content: action.content,
+        visibility: action.visibility,
+        sourceMessageId: input.sourceMessageId,
+        sourceMemoryIds: [...action.sourceMemoryIds],
+        status: 'confirmed',
+      }
+      return {
+        events: [observation, memory],
+        result: {
+          schemaVersion: 1 as const,
+          action: 'consolidate' as const,
+          affectedMemoryIds: [...action.sourceMemoryIds, memory.id],
+          createdMemory: memory,
+        },
+      }
+    })
+    this.#lifecyclePlans.delete(input.planId)
+    const derivedViews = await this.derivedViewInvalidator.invalidate(result.affectedMemoryIds)
+    return { ...result, ...(derivedViews.length === 0 ? {} : { derivedViews }) }
+  }
+
   #rememberCandidateReference(candidate: MemoryCandidate): void {
     const references = this.#candidateReferences.get(candidate.id) ?? new Set<MemoryCandidate>()
     references.add(candidate)
@@ -927,6 +1191,7 @@ export async function openMemoryArchive(options: OpenMemoryArchiveOptions): Prom
     now,
     options.conflictEvaluator ?? new DeterministicMemoryConflictEvaluator(),
     options.retrievalEngine ?? new MemoryRetrievalEngine(),
+    options.derivedViewInvalidator ?? new DerivedMemoryViewRegistry(),
   )
 }
 
@@ -972,6 +1237,16 @@ const memoryValueSchema = {
     sourceMessageId: { type: 'string', required: true },
     sourceCandidateId: { type: 'string' },
     supersedesMemoryId: { type: 'string' },
+    sourceMemoryIds: { type: 'array', items: { type: 'string' } },
+    lifecycle: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        tier: { type: 'string', required: true, enum: ['hot', 'cold', 'archived'] },
+        rankMultiplier: { type: 'number', required: true },
+        updatedAt: { type: 'string', required: true },
+      },
+    },
     status: { type: 'string', required: true, enum: ['confirmed', 'forgotten', 'superseded'] },
   },
 } as const satisfies ValueSchemaSpec
@@ -1483,6 +1758,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     throw new TypeError('mistymoon-memory: maxTransactionBytes must not exceed maxArchiveBytes')
   }
   const advancedRetrieval = new AdvancedRetrievalRegistry()
+  const derivedViews = new DerivedMemoryViewRegistry()
   const archive = await openMemoryArchive({
     path: config.path,
     leaseTimeoutMs: config.leaseTimeoutMs ?? 30_000,
@@ -1491,6 +1767,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     maxArchiveBytes,
     maxTransactionBytes,
     retrievalEngine: new MemoryRetrievalEngine({ advancedProviderSource: advancedRetrieval }),
+    derivedViewInvalidator: derivedViews,
   })
   const extraction = new CandidateExtractionRegistry()
   ctx.effect(() => ctx.provide('mistymoonMemory', archive), 'mistymoon-memory: shared archive')
@@ -1501,6 +1778,10 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   ctx.effect(
     () => ctx.provide('mistymoonMemoryAdvancedRetrieval', advancedRetrieval),
     'mistymoon-memory: advanced retrieval Provider registry',
+  )
+  ctx.effect(
+    () => ctx.provide('mistymoonMemoryDerivedViews', derivedViews),
+    'mistymoon-memory: derived view invalidation registry',
   )
   ctx.effect(
     () => ctx.provide('mistymoonMemoryGovernance', memoryGovernanceService(ownerEligibility(ctx), archive)),

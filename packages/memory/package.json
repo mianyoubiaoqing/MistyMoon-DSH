@@ -35,6 +35,10 @@
       "types": "./lib/advanced-retrieval.d.ts",
       "default": "./lib/advanced-retrieval.js"
     },
+    "./lifecycle": {
+      "types": "./lib/lifecycle.d.ts",
+      "default": "./lib/lifecycle.js"
+    },
     "./domain": {
       "types": "./lib/domain.d.ts",
       "default": "./lib/domain.js"

@@ -236,7 +236,11 @@ export class MemoryRetrievalEngine {
     const ranked = [...fused]
       .flatMap(([memoryId, value]) => {
         const memory = byId.get(memoryId)
-        return memory === undefined ? [] : [{ memory, ...value }]
+        return memory === undefined ? [] : [{
+          memory,
+          ...value,
+          score: value.score * (memory.lifecycle?.rankMultiplier ?? 1),
+        }]
       })
       .toSorted((left, right) => right.score - left.score || right.memory.createdAt.localeCompare(left.memory.createdAt))
     const items: MemoryRecallSnapshotV1['items'] = []

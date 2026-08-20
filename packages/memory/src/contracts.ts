@@ -6,6 +6,7 @@ import type {
 } from './domain.js'
 import type { CandidateExtractionReceiptV1, ExtractedMemoryDraftV1 } from './candidate-extraction.js'
 import type { MemoryConflictAssessmentV1 } from './conflict.js'
+import type { DerivedMemoryViewInvalidationReceiptV1 } from './lifecycle.js'
 
 /** Owner-governed visibility retained with every memory. */
 export type MemoryVisibility = 'personal' | 'confidential'
@@ -30,6 +31,14 @@ interface ScopedMemoryFields {
 export interface MemoryRecord extends ScopedMemoryFields {
   sourceCandidateId?: string
   supersedesMemoryId?: string
+  /** Complete leaf lineage for an Owner-approved derived summary. */
+  sourceMemoryIds?: string[]
+  /** Replay-derived retrieval metadata; it never changes fact truth. */
+  lifecycle?: {
+    tier: 'hot' | 'cold' | 'archived'
+    rankMultiplier: number
+    updatedAt: string
+  }
   status: 'confirmed' | 'forgotten' | 'superseded'
 }
 
@@ -152,6 +161,7 @@ export interface MemorySourceViewV1 {
   sourceCandidateId?: string
   sourceCandidateIds?: readonly string[]
   supersedesMemoryId?: string
+  sourceMemoryIds?: readonly string[]
 }
 
 export interface MemoryBatchDecisionV1 {
@@ -232,6 +242,67 @@ export interface MemoryRetrievalRequestV1 extends MemoryRecall {
   maxCharacters?: number
 }
 
+/** Side-effect-free lifecycle proposal input under a host-constructed governance context. */
+export interface MemoryLifecyclePlanRequestV1 extends TrustedMemoryRequest {
+  action:
+    | {
+        kind: 'consolidate'
+        sourceMemoryIds: readonly string[]
+        content: string
+      }
+    | {
+        kind: 'decay'
+        coldAfterDays: number
+        minimumRankMultiplier: number
+      }
+    | {
+        kind: 'archive' | 'restore'
+        memoryIds: readonly string[]
+      }
+}
+
+/** Immutable confirmation object; callers must not edit and re-submit its payload. */
+export interface MemoryLifecyclePlanV1 {
+  schemaVersion: 1
+  id: string
+  createdAt: string
+  action:
+    | {
+        kind: 'consolidate'
+        sourceMemoryIds: readonly string[]
+        content: string
+        visibility: MemoryVisibility
+      }
+    | {
+        kind: 'decay'
+        changes: ReadonlyArray<{
+          memoryId: string
+          toTier: 'cold'
+          rankMultiplier: number
+        }>
+      }
+    | {
+        kind: 'archive' | 'restore'
+        memoryIds: readonly string[]
+      }
+}
+
+/** Apply one in-process plan only after explicit Owner confirmation. */
+export interface MemoryLifecycleApplyRequestV1 extends TrustedMemoryRequest {
+  planId: string
+  ownerConfirmed: boolean
+  sourceMessageId: string
+}
+
+/** Archive result plus payload-free status for disposable derived views. */
+export interface MemoryLifecycleApplyResultV1 {
+  schemaVersion: 1
+  action: MemoryLifecyclePlanV1['action']['kind']
+  affectedMemoryIds: readonly string[]
+  createdMemory?: MemoryRecord
+  derivedViews?: readonly DerivedMemoryViewInvalidationReceiptV1[]
+}
+
 export interface MemoryRecallItemV1 {
   memory: MemoryRecord
   score: number
@@ -283,6 +354,8 @@ export interface CompanionMemoryArchive {
   batchDecide(input: MemoryBatchGovernanceRequestV1): Promise<MemoryBatchGovernanceResultV1>
   approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord>
   rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate>
+  planLifecycle(input: MemoryLifecyclePlanRequestV1): MemoryLifecyclePlanV1
+  applyLifecycle(input: MemoryLifecycleApplyRequestV1): Promise<MemoryLifecycleApplyResultV1>
 }
 
 /** Context-free facade exposed only to the authenticated loopback settings transport. */

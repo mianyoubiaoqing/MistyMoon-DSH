@@ -43,7 +43,23 @@ export interface MemoryCandidateResolutionEvent {
   replacementCandidateId?: string
 }
 
-export type MemoryDomainEvent = MemoryObservationV1 | MemoryRecord | MemoryCandidate | MemoryForgottenEvent | MemoryCandidateResolutionEvent
+export interface MemoryLifecycleEvent {
+  schemaVersion: 2
+  event: 'lifecycle'
+  id: string
+  createdAt: string
+  ownerId: string
+  scope: MemoryScopeV1
+  observationId: string
+  memoryId: string
+  action: 'decay' | 'archive' | 'restore'
+  tier: 'hot' | 'cold' | 'archived'
+  rankMultiplier: number
+  sourceMessageId: string
+}
+
+export type MemoryDomainEvent = MemoryObservationV1 | MemoryRecord | MemoryCandidate
+  | MemoryForgottenEvent | MemoryCandidateResolutionEvent | MemoryLifecycleEvent
 
 export type ArchiveIssueCode =
   | 'trailing-partial-transaction'
@@ -80,9 +96,10 @@ export interface ArchiveInspection {
 }
 
 export interface SourceUse {
-  kind: 'memory' | 'candidate' | 'forget' | 'replace' | 'approve' | 'reject'
+  kind: 'memory' | 'candidate' | 'forget' | 'replace' | 'approve' | 'reject' | 'lifecycle'
   transactionId: string
   memoryId?: string
+  memoryIds?: string[]
   candidateId?: string
   candidateIds?: string[]
   targetMemoryId?: string
@@ -379,6 +396,13 @@ function visibility(value: unknown): 'personal' | 'confidential' {
   return value
 }
 
+function rankMultiplier(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0.1 || value > 1) {
+    throw new Error('rank multiplier must be from 0.1 through 1')
+  }
+  return value
+}
+
 function parseLegacyDomainEvent(value: unknown, line: number, offset: number): LegacyMemoryDomainEventV1 {
   let entry: Record<string, unknown>
   try {
@@ -492,6 +516,32 @@ function parseDomainEvent(value: unknown, line: number, offset: number): MemoryD
         sourceMessageId: requiredString(entry.sourceMessageId),
       }
     }
+    if (entry.event === 'lifecycle') {
+      exactDomainKeys(entry, [
+        'schemaVersion', 'event', 'id', 'createdAt', 'ownerId', 'scope', 'observationId',
+        'memoryId', 'action', 'tier', 'rankMultiplier', 'sourceMessageId',
+      ])
+      if (entry.action !== 'decay' && entry.action !== 'archive' && entry.action !== 'restore') {
+        throw new Error('unsupported lifecycle action')
+      }
+      if (entry.tier !== 'hot' && entry.tier !== 'cold' && entry.tier !== 'archived') {
+        throw new Error('unsupported memory recall tier')
+      }
+      return {
+        schemaVersion: 2,
+        event: 'lifecycle',
+        id: requiredString(entry.id),
+        createdAt: timestamp(entry.createdAt),
+        ownerId: requiredString(entry.ownerId),
+        scope: parseMemoryScopeV1(entry.scope),
+        observationId: requiredString(entry.observationId),
+        memoryId: requiredString(entry.memoryId),
+        action: entry.action,
+        tier: entry.tier,
+        rankMultiplier: rankMultiplier(entry.rankMultiplier),
+        sourceMessageId: requiredString(entry.sourceMessageId),
+      }
+    }
     if (entry.event === 'candidate-resolution') {
       exactDomainKeys(entry, [
         'schemaVersion', 'event', 'id', 'createdAt', 'ownerId', 'scope', 'observationId', 'candidateId',
@@ -574,12 +624,25 @@ function parseDomainEvent(value: unknown, line: number, offset: number): MemoryD
       }
     }
     if (entry.event !== undefined) throw new FormatIssue({ code: 'unknown-required-event', line, offset })
-    exactDomainKeys(entry, commonRequired, ['validFrom', 'validTo', 'sourceCandidateId', 'supersedesMemoryId'])
+    exactDomainKeys(entry, commonRequired, [
+      'validFrom', 'validTo', 'sourceCandidateId', 'supersedesMemoryId', 'sourceMemoryIds',
+    ])
     if (entry.status !== 'confirmed') throw new Error('memory must start confirmed')
+    let sourceMemoryIds: string[] | undefined
+    if (entry.sourceMemoryIds !== undefined) {
+      if (!Array.isArray(entry.sourceMemoryIds) || entry.sourceMemoryIds.length < 2) {
+        throw new Error('summary source lineage must contain at least two memory IDs')
+      }
+      sourceMemoryIds = entry.sourceMemoryIds.map(requiredString)
+      if (new Set(sourceMemoryIds).size !== sourceMemoryIds.length) {
+        throw new Error('summary source lineage must be unique')
+      }
+    }
     return {
       ...common,
       ...(entry.sourceCandidateId === undefined ? {} : { sourceCandidateId: requiredString(entry.sourceCandidateId) }),
       ...(entry.supersedesMemoryId === undefined ? {} : { supersedesMemoryId: requiredString(entry.supersedesMemoryId) }),
+      ...(sourceMemoryIds === undefined ? {} : { sourceMemoryIds }),
       status: 'confirmed',
     }
   } catch (error) {
@@ -601,7 +664,11 @@ function emptyState(): FoldedMemoryState {
 }
 
 function cloneMemory(memory: MemoryRecord): MemoryRecord {
-  return { ...memory }
+  return {
+    ...memory,
+    ...(memory.sourceMemoryIds === undefined ? {} : { sourceMemoryIds: [...memory.sourceMemoryIds] }),
+    ...(memory.lifecycle === undefined ? {} : { lifecycle: { ...memory.lifecycle } }),
+  }
 }
 
 function cloneCandidate(candidate: MemoryCandidate): MemoryCandidate {
@@ -634,6 +701,7 @@ export function cloneFoldedState(source: FoldedMemoryState): FoldedMemoryState {
     sources: new Map([...source.sources].map(([id, use]) => [id, {
       ...use,
       ...(use.candidateIds === undefined ? {} : { candidateIds: [...use.candidateIds] }),
+      ...(use.memoryIds === undefined ? {} : { memoryIds: [...use.memoryIds] }),
     }])),
   }
 }
@@ -703,6 +771,44 @@ function foldEvent(
     target.status = 'forgotten'
     return
   }
+  if ('event' in event && event.event === 'lifecycle') {
+    const { observation, sourceKey } = eventObservation(state, event, line, offset)
+    const target = state.byId.get(event.memoryId)
+    if (target === undefined || target.status !== 'confirmed' || target.ownerId !== event.ownerId
+      || !memoryScopeEquals(target.scope, event.scope)) issue('invalid-state-transition', line, offset)
+    const targetObservation = state.observations.get(target.observationId)
+    if (targetObservation?.authority !== observation.authority) issue('invalid-state-transition', line, offset)
+    const currentTier = target.lifecycle?.tier ?? 'hot'
+    const currentMultiplier = target.lifecycle?.rankMultiplier ?? 1
+    if (event.action === 'decay') {
+      if (event.tier !== 'cold' || currentTier === 'archived'
+        || target.memoryKind === 'boundary' || target.memoryKind === 'commitment' || target.memoryKind === 'state'
+        || event.rankMultiplier > currentMultiplier) issue('invalid-state-transition', line, offset)
+    } else if (event.action === 'archive') {
+      if (event.tier !== 'archived' || currentTier === 'archived'
+        || event.rankMultiplier !== currentMultiplier) issue('invalid-state-transition', line, offset)
+    } else if (currentTier !== 'archived' || event.tier === 'archived'
+      || event.rankMultiplier !== currentMultiplier) {
+      issue('invalid-state-transition', line, offset)
+    }
+    const existing = state.sources.get(sourceKey)
+    if (existing === undefined) {
+      state.sources.set(sourceKey, {
+        kind: 'lifecycle', transactionId, memoryId: target.id, memoryIds: [target.id],
+      })
+    } else if (existing.kind === 'lifecycle' && existing.transactionId === transactionId) {
+      if (existing.memoryIds?.includes(target.id)) issue('invalid-state-transition', line, offset)
+      existing.memoryIds = [...(existing.memoryIds ?? []), target.id]
+    } else {
+      issue('duplicate-source', line, offset)
+    }
+    target.lifecycle = {
+      tier: event.tier,
+      rankMultiplier: event.rankMultiplier,
+      updatedAt: event.createdAt,
+    }
+    return
+  }
   if ('event' in event && event.event === 'candidate') {
     const { sourceKey } = eventObservation(state, event, line, offset)
     if (event.sourceCandidateIds !== undefined) {
@@ -761,7 +867,21 @@ function foldEvent(
     return
   }
   const memory = event
-  const { sourceKey } = eventObservation(state, memory, line, offset)
+  const { observation, sourceKey } = eventObservation(state, memory, line, offset)
+  if (memory.sourceMemoryIds !== undefined) {
+    if (memory.memoryKind !== 'summary' || memory.sourceCandidateId !== undefined
+      || memory.supersedesMemoryId !== undefined) issue('invalid-state-transition', line, offset)
+    const sources = memory.sourceMemoryIds.map(memoryId => state.byId.get(memoryId))
+    if (sources.some(source => source === undefined || source.sourceMemoryIds !== undefined
+      || source.status !== 'confirmed' || source.ownerId !== memory.ownerId
+      || !memoryScopeEquals(source.scope, memory.scope)
+      || state.observations.get(source.observationId)?.authority !== observation.authority)) {
+      issue('invalid-state-transition', line, offset)
+    }
+    if (sources.some(source => source?.visibility === 'confidential') && memory.visibility !== 'confidential') {
+      issue('invalid-state-transition', line, offset)
+    }
+  }
   if (memory.sourceCandidateId !== undefined) {
     const candidate = state.candidateById.get(memory.sourceCandidateId)
     if (candidate === undefined || candidate.status !== 'pending' || candidate.ownerId !== memory.ownerId

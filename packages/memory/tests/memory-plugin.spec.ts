@@ -97,6 +97,7 @@ describe('MistyMoon memory plugin', () => {
     expect(ctx.mistymoonMemory).toBeDefined()
     expect(ctx.mistymoonMemoryGovernance).toBeDefined()
     expect(ctx.mistymoonMemoryAdvancedRetrieval.plans()).toEqual([])
+    expect(await ctx.mistymoonMemoryDerivedViews.invalidate([])).toEqual([])
     const session = Session.create(SessionId('memory-session'))
     const agent = sessionAgent(session)
     const remember = createUserMessage({
