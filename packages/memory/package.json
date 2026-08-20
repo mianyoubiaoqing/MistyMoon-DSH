@@ -19,6 +19,10 @@
       "types": "./lib/contracts.d.ts",
       "default": "./lib/contracts.js"
     },
+    "./candidate-extraction": {
+      "types": "./lib/candidate-extraction.d.ts",
+      "default": "./lib/candidate-extraction.js"
+    },
     "./domain": {
       "types": "./lib/domain.d.ts",
       "default": "./lib/domain.js"

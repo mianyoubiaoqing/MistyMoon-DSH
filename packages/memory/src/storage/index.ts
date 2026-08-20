@@ -3,6 +3,7 @@ import { mkdir, open, readFile, rename, rm } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { lock as acquireProperLock } from 'proper-lockfile'
 import type { MemoryCandidate, MemoryRecord } from '../contracts.js'
+import { parseCandidateExtractionReceiptV1 } from '../candidate-extraction.js'
 import {
   memoryScopeEquals,
   memorySourceKey,
@@ -82,6 +83,7 @@ export interface SourceUse {
   transactionId: string
   memoryId?: string
   candidateId?: string
+  candidateIds?: string[]
   targetMemoryId?: string
   content?: string
   visibility?: 'personal' | 'confidential'
@@ -533,9 +535,21 @@ function parseDomainEvent(value: unknown, line: number, offset: number): MemoryD
       sourceMessageId: requiredString(entry.sourceMessageId),
     }
     if (entry.event === 'candidate') {
-      exactDomainKeys(entry, [...commonRequired, 'event'], ['validFrom', 'validTo'])
+      exactDomainKeys(entry, [...commonRequired, 'event'], ['validFrom', 'validTo', 'extraction'])
       if (entry.status !== 'pending') throw new Error('candidate must start pending')
-      return { ...common, event: 'candidate', status: 'pending' }
+      let extraction: MemoryCandidate['extraction']
+      if (entry.extraction !== undefined) {
+        const value = record(entry.extraction)
+        exactDomainKeys(value, ['schemaVersion', 'providerId', 'providerVersion', 'receipt'])
+        if (value.schemaVersion !== 1) throw new Error('unsupported extraction metadata')
+        extraction = {
+          schemaVersion: 1,
+          providerId: requiredString(value.providerId),
+          providerVersion: requiredString(value.providerVersion),
+          receipt: parseCandidateExtractionReceiptV1(value.receipt),
+        }
+      }
+      return { ...common, event: 'candidate', status: 'pending', ...(extraction === undefined ? {} : { extraction }) }
     }
     if (entry.event !== undefined) throw new FormatIssue({ code: 'unknown-required-event', line, offset })
     exactDomainKeys(entry, commonRequired, ['validFrom', 'validTo', 'sourceCandidateId', 'supersedesMemoryId'])
@@ -569,7 +583,15 @@ function cloneMemory(memory: MemoryRecord): MemoryRecord {
 }
 
 function cloneCandidate(candidate: MemoryCandidate): MemoryCandidate {
-  return { ...candidate }
+  return {
+    ...candidate,
+    ...(candidate.extraction === undefined ? {} : {
+      extraction: {
+        ...candidate.extraction,
+        receipt: { ...candidate.extraction.receipt },
+      },
+    }),
+  }
 }
 
 export function cloneFoldedState(source: FoldedMemoryState): FoldedMemoryState {
@@ -586,7 +608,10 @@ export function cloneFoldedState(source: FoldedMemoryState): FoldedMemoryState {
       source: { ...observation.source },
     }])),
     eventIds: new Set(source.eventIds),
-    sources: new Map([...source.sources].map(([id, use]) => [id, { ...use }])),
+    sources: new Map([...source.sources].map(([id, use]) => [id, {
+      ...use,
+      ...(use.candidateIds === undefined ? {} : { candidateIds: [...use.candidateIds] }),
+    }])),
   }
 }
 
@@ -657,11 +682,18 @@ function foldEvent(
   }
   if ('event' in event && event.event === 'candidate') {
     const { sourceKey } = eventObservation(state, event, line, offset)
-    reserveSource(state, sourceKey, {
-      kind: 'candidate', transactionId, candidateId: event.id, content: event.content,
-      visibility: event.visibility, memoryKind: event.memoryKind, recordedAt: event.recordedAt,
-      validFrom: event.validFrom, validTo: event.validTo,
-    }, line, offset)
+    const existing = state.sources.get(sourceKey)
+    if (existing === undefined) {
+      state.sources.set(sourceKey, {
+        kind: 'candidate', transactionId, candidateId: event.id, candidateIds: [event.id], content: event.content,
+        visibility: event.visibility, memoryKind: event.memoryKind, recordedAt: event.recordedAt,
+        validFrom: event.validFrom, validTo: event.validTo,
+      })
+    } else if (existing.kind === 'candidate' && existing.transactionId === transactionId) {
+      existing.candidateIds = [...(existing.candidateIds ?? (existing.candidateId === undefined ? [] : [existing.candidateId])), event.id]
+    } else {
+      issue('duplicate-source', line, offset)
+    }
     state.candidates.push(event)
     state.candidateById.set(event.id, event)
     return

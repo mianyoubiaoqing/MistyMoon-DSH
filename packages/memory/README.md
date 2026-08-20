@@ -18,10 +18,12 @@ Recall hard-filters confirmed state, exact Owner, authority, exact scope, curren
 
 On Windows, Node can fsync archive and backup files but returns `EPERM` for directory-handle fsync. Maintenance therefore reports `directoryDurability: unsupported-platform` after file fsync, atomic rename, checkpoint publication, and full reopen verification. A sudden power loss during the narrow rename window may require restoring the exact backup; ordinary process failure and partial writes remain fail-closed.
 
+Post-response candidate extraction now uses a single-active Provider registry. The Provider receives only authenticated Owner evidence selected from the completed top-level turn, returns strict untrusted drafts, and cannot access the Archive. Memory atomically records every source batch as pending with a provider receipt; failures are bounded and cannot fail the Owner turn. No extraction Provider is bundled or enabled by default. A future model-backed Adapter must run through a separately logged DSH Session and return its request/response receipt.
+
 Current limitations:
 
 - The current `local-dsh-host-rpc` authority supports only the default loopback Web single-Owner deployment. Other channels remain fail-closed until they supply an authenticated authority adapter.
-- Candidate creation currently occurs through a DSH tool call. A background post-response extraction provider and a dedicated visual review panel are not active.
+- The extraction seam and post-response consumer are active, but no local-model or remote Provider is bundled; candidates can still be proposed through the governed DSH tool.
 - Recall is lexical. Embeddings and reranking remain optional future adapters.
 - There is no dedicated memory-management Web panel yet; confirmed-memory and candidate governance currently use DSH tools.
 - Imported batches do not yet have a rollback command. Individual imported memories remain forgettable through the normal append-only tool.

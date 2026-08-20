@@ -32,7 +32,7 @@ README 剩余 P0 同时包含自动写入、冲突治理、存储格式、管理
 | --- | --- | --- | --- | --- |
 | A | `003-memory-storage-reliability` | 版本化事务记录、跨进程单写者、显式迁移和损坏恢复 | 无 | 自动提取、冲突模型、管理页、召回算法 |
 | B | `004-memory-scoped-records` | Trusted Owner/authority/scope、Memory Observation、kind 与有效时间成为所有写入和读取的必需领域边界 | A | 自动提取、冲突检测、BM25、管理页 |
-| C | `005-memory-candidate-extraction` | 回复后自动候选提取 Provider；候选永不自动批准 | A、B | 冲突替代、候选编辑、定时整合 |
+| C | `005-memory-candidate-extraction`（已完成） | 回复后自动候选提取 Provider；候选永不自动批准 | A、B | 冲突替代、候选编辑、定时整合 |
 | D | `006-memory-conflict-supersession` | 冲突/近重复检测与 Owner 决策后的墓碑、`supersedes` 链 | A、B、C | 自动合并、批量 UI、向量召回 |
 | E | `007-memory-candidate-governance` | 候选编辑、合并和不含敏感载荷的操作审计 | A、D | 完整搜索页、召回算法 |
 | F | `008-memory-management-ui` | 搜索、筛选、批量审核和来源查看的专用页面 | A、B、D、E | 直接文件访问、业务规则复制 |

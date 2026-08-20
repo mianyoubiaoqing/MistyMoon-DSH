@@ -4,6 +4,7 @@ import type {
   MemoryKind,
   MemoryScopeV1,
 } from './domain.js'
+import type { CandidateExtractionReceiptV1, ExtractedMemoryDraftV1 } from './candidate-extraction.js'
 
 /** Owner-governed visibility retained with every memory. */
 export type MemoryVisibility = 'personal' | 'confidential'
@@ -35,6 +36,21 @@ export interface MemoryRecord extends ScopedMemoryFields {
 export interface MemoryCandidate extends ScopedMemoryFields {
   event: 'candidate'
   status: 'pending' | 'approved' | 'rejected'
+  extraction?: {
+    schemaVersion: 1
+    providerId: string
+    providerVersion: string
+    receipt: CandidateExtractionReceiptV1
+  }
+}
+
+/** Memory-owned atomic ingestion of one Provider result for one selected source. */
+export interface ExtractedMemoryCandidateBatch extends TrustedMemoryRequest {
+  sourceMessageId: string
+  providerId: string
+  providerVersion: string
+  receipt: CandidateExtractionReceiptV1
+  drafts: readonly Omit<ExtractedMemoryDraftV1, 'sourceMessageId'>[]
 }
 
 interface TrustedMemoryRequest {
@@ -130,6 +146,7 @@ export interface CompanionMemoryArchive {
   replace(input: MemoryReplace): Promise<MemoryRecord>
   importConfirmed(input: ConfirmedMemoryImport): Promise<ConfirmedMemoryImportResult>
   propose(input: MemoryCandidateProposal): Promise<MemoryCandidate>
+  proposeExtracted(input: ExtractedMemoryCandidateBatch): Promise<MemoryCandidate[]>
   listCandidates(input: MemoryCandidateList): MemoryCandidate[]
   approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord>
   rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate>

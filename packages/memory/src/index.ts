@@ -13,6 +13,7 @@ import type {
   CompanionMemoryArchive,
   ConfirmedMemoryImport,
   ConfirmedMemoryImportResult,
+  ExtractedMemoryCandidateBatch,
   ExplicitMemoryObservation,
   MemoryCandidate,
   MemoryCandidateDecision,
@@ -27,6 +28,11 @@ import type {
   MemoryVisibility,
 } from './contracts.js'
 import { DEFAULT_RECALL_LIMIT, loadMemoryRuntimeSettings } from './runtime-settings.js'
+import {
+  CandidateExtractionRegistry,
+  extractMemoryCandidates,
+  type CandidateExtractionRequestV1,
+} from './candidate-extraction.js'
 import {
   canDiscloseMemory,
   isMemoryCurrentlyValid,
@@ -50,6 +56,7 @@ import {
 } from './storage/index.js'
 
 export * from './contracts.js'
+export * from './candidate-extraction.js'
 export * from './domain.js'
 export * from './runtime-settings.js'
 
@@ -79,6 +86,8 @@ export interface Config {
   maxTransactionBytes?: number
   /** Trusted local-channel policy; request text alone can never expand this value. */
   channelDisclosure?: MemoryAccessContextV1['channelDisclosure']
+  /** Deadline for one optional post-response candidate extraction call. */
+  extractionTimeoutMs?: number
 }
 
 /** Runtime schema for the memory plugin. */
@@ -92,6 +101,7 @@ export const Config: z<Config> = z.object({
   maxArchiveBytes: z.number().step(1).min(1_048_576).max(1_073_741_824).default(67_108_864),
   maxTransactionBytes: z.number().step(1).min(1_024).max(16_777_216).default(1_048_576),
   channelDisclosure: z.union(['personal-only', 'owner-confidential']).default('personal-only'),
+  extractionTimeoutMs: z.number().step(1).min(100).max(60_000).default(3_000),
 })
 
 declare module '@deepseek-ai/cordis' {
@@ -100,6 +110,8 @@ declare module '@deepseek-ai/cordis' {
     mistymoonMemory: CompanionMemoryArchive
     /** Loopback-only governance facade; clients cannot select Owner or scope. */
     mistymoonMemoryGovernance: MemoryGovernanceService
+    /** Optional post-response extraction Provider registry; zero providers is the safe default. */
+    mistymoonMemoryCandidateExtraction: CandidateExtractionRegistry
   }
 }
 
@@ -425,6 +437,77 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     return candidate
   }
 
+  async proposeExtracted(input: ExtractedMemoryCandidateBatch): Promise<MemoryCandidate[]> {
+    const context = this.#context(input.context)
+    const providerId = input.providerId.trim()
+    const providerVersion = input.providerVersion.trim()
+    if (providerId === '' || providerVersion === '') throw new TypeError('extraction provider identity must be non-empty')
+    if (input.drafts.length === 0) return []
+    if (input.drafts.length > 8) throw new TypeError('an extracted source batch may contain at most 8 drafts')
+    const normalized = input.drafts.map((draft) => {
+      const content = draft.content.trim()
+      if (content === '' || content.length > 2_000) throw new TypeError('extracted candidate content is invalid')
+      const validity = validateMemoryValidity({
+        recordedAt: draft.recordedAt ?? this.now().toISOString(),
+        ...(draft.validFrom === undefined ? {} : { validFrom: draft.validFrom }),
+        ...(draft.validTo === undefined ? {} : { validTo: draft.validTo }),
+      })
+      return { ...draft, ...validity, content }
+    })
+    const candidates = await this.storage.transact(state => {
+      const sourceKey = this.#sourceKey(context, 'dsh-message', input.sourceMessageId)
+      const used = state.sources.get(sourceKey)
+      if (used !== undefined) {
+        const existing = (used.candidateIds ?? (used.candidateId === undefined ? [] : [used.candidateId]))
+          .map(id => state.candidateById.get(id))
+        if (used.kind === 'candidate' && existing.length === normalized.length && existing.every((candidate, index) => {
+          const draft = normalized[index]
+          const supplied = input.drafts[index]
+          return candidate !== undefined && draft !== undefined
+            && supplied !== undefined
+            && candidate.content === draft.content
+            && candidate.visibility === draft.visibility
+            && candidate.memoryKind === draft.memoryKind
+            && (supplied.recordedAt === undefined || candidate.recordedAt === draft.recordedAt)
+            && candidate.validFrom === draft.validFrom
+            && candidate.validTo === draft.validTo
+            && candidate.extraction?.providerId === providerId
+            && candidate.extraction.providerVersion === providerVersion
+            && JSON.stringify(candidate.extraction.receipt) === JSON.stringify(input.receipt)
+        })) return { events: [], result: existing as MemoryCandidate[] }
+        return conflict(input.sourceMessageId)
+      }
+      const timestamp = this.now().toISOString()
+      const observation = this.#observation(context, 'dsh-message', input.sourceMessageId, timestamp)
+      const created = normalized.map<MemoryCandidate>(draft => ({
+        schemaVersion: 2,
+        event: 'candidate',
+        id: this.createId(),
+        ownerId: context.ownerId,
+        scope: context.scope,
+        observationId: observation.id,
+        memoryKind: draft.memoryKind,
+        createdAt: timestamp,
+        recordedAt: draft.recordedAt,
+        ...(draft.validFrom === undefined ? {} : { validFrom: draft.validFrom }),
+        ...(draft.validTo === undefined ? {} : { validTo: draft.validTo }),
+        content: draft.content,
+        visibility: draft.visibility,
+        sourceMessageId: input.sourceMessageId,
+        status: 'pending',
+        extraction: {
+          schemaVersion: 1,
+          providerId,
+          providerVersion,
+          receipt: input.receipt,
+        },
+      }))
+      return { events: [observation, ...created], result: created }
+    })
+    for (const candidate of candidates) this.#rememberCandidateReference(candidate)
+    return candidates
+  }
+
   listCandidates(input: MemoryCandidateList): MemoryCandidate[] {
     const context = this.#context(input.context)
     const state = this.storage.snapshot()
@@ -596,6 +679,25 @@ const memoryCandidateValueSchema = {
     visibility: { type: 'string', required: true, enum: ['personal', 'confidential'] },
     sourceMessageId: { type: 'string', required: true },
     status: { type: 'string', required: true, enum: ['pending', 'approved', 'rejected'] },
+    extraction: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        schemaVersion: { type: 'integer', required: true },
+        providerId: { type: 'string', required: true },
+        providerVersion: { type: 'string', required: true },
+        receipt: {
+          type: 'object', required: true, additionalProperties: false,
+          properties: {
+            kind: { type: 'string', required: true, enum: ['local-deterministic', 'dsh-session'] },
+            implementationVersion: { type: 'string' },
+            sessionId: { type: 'string' },
+            requestSeq: { type: 'integer' },
+            responseSeq: { type: 'integer' },
+          },
+        },
+      },
+    },
   },
 } as const satisfies ValueSchemaSpec
 
@@ -665,6 +767,29 @@ function currentTurnText(agent: Agent): string {
     }
   }
   return events.slice(start).flatMap(event => event.type === 'user/message' ? [userText(event.data)] : []).join('\n')
+}
+
+function currentTurnOwnerMessages(agent: Agent, turn: number, eligibility: MemoryOwnerEligibility): UserMessage[] {
+  const events = agent.session.events
+  let start = -1
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event?.type === 'turn/start' && event.data.turn === turn) {
+      start = index + 1
+      break
+    }
+  }
+  if (start < 0) return []
+  const messages = events.slice(start)
+    .filter(event => event.type === 'user/message')
+    .map(event => event.data)
+  return [...eligibility.ownerMessages(agent, messages)]
+}
+
+function turnHasCompletedReply(agent: Agent, turn: number): boolean {
+  return agent.session.events.some(event => event.type === 'assistant/message'
+    && event.data.turn === turn
+    && event.data.message.content.some(block => block.type === 'text' && block.text.trim() !== ''))
 }
 
 function ownerContext(
@@ -964,7 +1089,12 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     maxArchiveBytes,
     maxTransactionBytes,
   })
+  const extraction = new CandidateExtractionRegistry()
   ctx.effect(() => ctx.provide('mistymoonMemory', archive), 'mistymoon-memory: shared archive')
+  ctx.effect(
+    () => ctx.provide('mistymoonMemoryCandidateExtraction', extraction),
+    'mistymoon-memory: candidate extraction Provider registry',
+  )
   ctx.effect(
     () => ctx.provide('mistymoonMemoryGovernance', memoryGovernanceService(ownerEligibility(ctx), archive)),
     'mistymoon-memory: loopback governance facade',
@@ -1028,4 +1158,29 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       return decision
     }
   }, { prepend: true })
+  ctx.on('agent/turn-stopping', async ({ agent, turn, signal }) => {
+    const provider = extraction.current()
+    if (provider === undefined || archive.inspection().state !== 'ready' || !turnHasCompletedReply(agent, turn)) return
+    const eligibility = ownerEligibility(ctx)
+    const ownerMessages = currentTurnOwnerMessages(agent, turn, eligibility)
+    for (const message of ownerMessages) {
+      const text = userText(message)
+      if (text === '') continue
+      const request: CandidateExtractionRequestV1 = {
+        schemaVersion: 1,
+        sessionId: String(agent.session.id),
+        turn,
+        context: ownerContext(eligibility.evaluateMessage(agent, message), channelDisclosure, text),
+        evidence: [{ messageId: String(message.id), text }],
+      }
+      try {
+        await extractMemoryCandidates(provider, request, archive, {
+          signal,
+          timeoutMs: config.extractionTimeoutMs ?? 3_000,
+        })
+      } catch {
+        ctx.logger.warn('mistymoon-memory: optional candidate extraction failed closed')
+      }
+    }
+  })
 }

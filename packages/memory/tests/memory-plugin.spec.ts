@@ -2,7 +2,7 @@ import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { Session, SessionId } from '@deepseek-ai/dsh-session'
 import AgentRegistry, { agentEvents, Inbox, type Agent } from '@deepseek-ai/dsh-agent'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
@@ -31,6 +31,61 @@ function sessionAgent(session: Session): Agent {
 }
 
 describe('MistyMoon memory plugin', () => {
+  it('extracts pending candidates only after a completed top-level Owner reply', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-extraction-plugin-'))
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
+    await ctx.plugin(MemoryPlugin, { path: join(root, 'memory.jsonl'), recallLimit: 4 })
+    let calls = 0
+    ctx.mistymoonMemoryCandidateExtraction.register({
+      id: 'fixture-provider',
+      version: '1.0.0',
+      executionKind: 'local-deterministic',
+      extract: async (request) => {
+        calls += 1
+        return {
+          schemaVersion: 1,
+          receipt: { kind: 'local-deterministic', implementationVersion: 'fixture-v1' },
+          drafts: [{
+            sourceMessageId: request.evidence[0]?.messageId,
+            content: '中性自动候选。',
+            visibility: 'personal',
+            memoryKind: 'summary',
+          }],
+        }
+      },
+    })
+    const session = Session.create(SessionId('memory-extraction-session'))
+    const agent = sessionAgent(session)
+    const owner = createUserMessage({
+      content: [{ type: 'text', text: '我提供一个中性稳定事实。' }],
+      source: { kind: 'user', rpcId: 'rpc-extraction' } as ReturnType<typeof createUserMessage>['source'],
+    })
+    session.append('turn/start', { turn: 1 })
+    session.append('user/message', owner, { surfaceOp: 'append' })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: createAssistantMessage({
+        content: [{ type: 'text', text: '中性回复。' }],
+        source: { provider: 'fixture', model: 'fixture' },
+      }),
+    }, { surfaceOp: 'append', sourceEventSeqs: [] })
+
+    await agentEvents(ctx, agent).serial('agent/turn-stopping', {
+      turn: 1,
+      signal: new AbortController().signal,
+    })
+
+    expect(calls).toBe(1)
+    expect(ctx.mistymoonMemory.listCandidates({ context: PERSONAL_COMPANION_ACCESS }))
+      .toEqual([expect.objectContaining({ content: '中性自动候选。', status: 'pending' })])
+  })
+
   it('logs the exact recalled-memory projection as a DSH plugin message', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mistymoon-memory-plugin-'))
     const ctx = new Context()
@@ -90,6 +145,16 @@ describe('MistyMoon memory plugin', () => {
     await ctx.plugin(AgentRegistry)
     await ctx.plugin(IdentityPlugin, { ownerId: 'owner-fixture' })
     await ctx.plugin(MemoryPlugin, { path, recallLimit: 4 })
+    let extractionCalls = 0
+    ctx.mistymoonMemoryCandidateExtraction.register({
+      id: 'child-fixture-provider',
+      version: '1.0.0',
+      executionKind: 'local-deterministic',
+      extract: async () => {
+        extractionCalls += 1
+        return { schemaVersion: 1, receipt: { kind: 'local-deterministic', implementationVersion: 'v1' }, drafts: [] }
+      },
+    })
     const id = SessionId('memory-child-session')
     const session = Session.create(id, [], {
       version: 0,
@@ -112,6 +177,21 @@ describe('MistyMoon memory plugin', () => {
     )
 
     expect(decision).toEqual({ kind: 'enter', messages: [childPrompt] })
+    session.append('step/start', { turn: 1, step: 1 })
+    session.append('user/message', childPrompt, { surfaceOp: 'append' })
+    session.append('assistant/message', {
+      turn: 1,
+      step: 1,
+      message: createAssistantMessage({
+        content: [{ type: 'text', text: '中性 child 回复。' }],
+        source: { provider: 'fixture', model: 'fixture' },
+      }),
+    }, { surfaceOp: 'append', sourceEventSeqs: [] })
+    await agentEvents(ctx, agent).serial('agent/turn-stopping', {
+      turn: 1,
+      signal: new AbortController().signal,
+    })
+    expect(extractionCalls).toBe(0)
     expect(ctx.mistymoonMemory.list({ context: PERSONAL_COMPANION_ACCESS })).toEqual([])
   })
 
