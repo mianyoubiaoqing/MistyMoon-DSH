@@ -23,6 +23,10 @@
       "types": "./lib/candidate-extraction.d.ts",
       "default": "./lib/candidate-extraction.js"
     },
+    "./conflict": {
+      "types": "./lib/conflict.d.ts",
+      "default": "./lib/conflict.js"
+    },
     "./domain": {
       "types": "./lib/domain.d.ts",
       "default": "./lib/domain.js"

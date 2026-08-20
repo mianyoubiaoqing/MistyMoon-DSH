@@ -53,6 +53,10 @@
       "types": "./packages/memory/lib/candidate-extraction.d.ts",
       "default": "./packages/memory/lib/candidate-extraction.js"
     },
+    "./memory/conflict": {
+      "types": "./packages/memory/lib/conflict.d.ts",
+      "default": "./packages/memory/lib/conflict.js"
+    },
     "./memory/legacy-migration": {
       "types": "./packages/memory/lib/legacy-migration.d.ts",
       "default": "./packages/memory/lib/legacy-migration.js"

@@ -16,6 +16,7 @@ import type {
   ExtractedMemoryCandidateBatch,
   ExplicitMemoryObservation,
   MemoryCandidate,
+  MemoryCandidateAssessment,
   MemoryCandidateDecision,
   MemoryCandidateList,
   MemoryCandidateProposal,
@@ -33,6 +34,12 @@ import {
   extractMemoryCandidates,
   type CandidateExtractionRequestV1,
 } from './candidate-extraction.js'
+import {
+  DeterministicMemoryConflictEvaluator,
+  parseMemoryConflictRelationships,
+  type MemoryConflictAssessmentV1,
+  type MemoryConflictEvaluator,
+} from './conflict.js'
 import {
   canDiscloseMemory,
   isMemoryCurrentlyValid,
@@ -57,6 +64,7 @@ import {
 
 export * from './contracts.js'
 export * from './candidate-extraction.js'
+export * from './conflict.js'
 export * from './domain.js'
 export * from './runtime-settings.js'
 
@@ -125,6 +133,8 @@ export interface OpenMemoryArchiveOptions {
   maxArchiveBytes?: number
   maxTransactionBytes?: number
   disposeTimeoutMs?: number
+  /** Optional pure evaluator seam used by deterministic contract tests and local adapters. */
+  conflictEvaluator?: MemoryConflictEvaluator
 }
 
 function explicitContent(text: string): string | undefined {
@@ -170,6 +180,7 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     private readonly storage: MemoryArchiveStorage,
     private readonly createId: () => string,
     private readonly now: () => Date,
+    private readonly conflictEvaluator: MemoryConflictEvaluator,
   ) {}
 
   inspection(): ArchiveInspection {
@@ -236,6 +247,40 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
       throw new MemoryArchiveError('memory target is unavailable in the trusted Owner/scope', 'MEMORY_SCOPE_MISMATCH')
     }
     return memory
+  }
+
+  #candidate(
+    state: FoldedMemoryState,
+    candidateId: string,
+    context: MemoryAccessContextV1,
+  ): MemoryCandidate {
+    const candidate = state.candidateById.get(candidateId)
+    if (candidate === undefined || !this.#sameDomain(state, candidate, context)
+      || !canDiscloseMemory(candidate.visibility, context)) {
+      throw new MemoryArchiveError('memory candidate is unavailable in the trusted Owner/scope', 'MEMORY_SCOPE_MISMATCH')
+    }
+    return candidate
+  }
+
+  #assessment(
+    state: FoldedMemoryState,
+    candidate: MemoryCandidate,
+    context: MemoryAccessContextV1,
+    evaluatedAt: string,
+  ): MemoryConflictAssessmentV1 {
+    const active = state.records.filter(memory => memory.status === 'confirmed'
+      && this.#sameDomain(state, memory, context)
+      && canDiscloseMemory(memory.visibility, context)
+      && isMemoryCurrentlyValid(memory, evaluatedAt))
+    return {
+      schemaVersion: 1,
+      candidateId: candidate.id,
+      evaluatedAt,
+      relationships: parseMemoryConflictRelationships(
+        this.conflictEvaluator.evaluate(candidate, active),
+        new Set(active.map(memory => memory.id)),
+      ),
+    }
   }
 
   async observeExplicit(input: ExplicitMemoryObservation): Promise<MemoryRecord | undefined> {
@@ -525,21 +570,45 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     return candidates
   }
 
+  assessCandidate(input: MemoryCandidateAssessment): MemoryConflictAssessmentV1 {
+    const context = this.#context(input.context)
+    const state = this.storage.snapshot()
+    if (state === undefined) throw new Error('memory archive is unavailable')
+    const candidate = this.#candidate(state, input.candidateId, context)
+    if (candidate.status !== 'pending') throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} is already ${candidate.status}`)
+    return this.#assessment(state, candidate, context, this.now().toISOString())
+  }
+
   async approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord> {
     const context = this.#context(input.context)
     const memory = await this.storage.transact(state => {
       const sourceKey = this.#sourceKey(context, 'governance-operation', input.sourceMessageId)
       const used = state.sources.get(sourceKey)
       if (used !== undefined) {
-        if (used.kind === 'approve' && used.candidateId === input.candidateId) return { events: [], result: existingMemory(state, used) }
+        const targetMemoryId = input.resolution?.kind === 'supersede' ? input.resolution.memoryId : undefined
+        if (used.kind === 'approve' && used.candidateId === input.candidateId
+          && used.targetMemoryId === targetMemoryId) return { events: [], result: existingMemory(state, used) }
         return conflict(input.sourceMessageId)
       }
-      const candidate = state.candidateById.get(input.candidateId)
-      if (candidate === undefined || !this.#sameDomain(state, candidate, context)) {
-        throw new MemoryArchiveError('memory candidate is unavailable in the trusted Owner/scope', 'MEMORY_SCOPE_MISMATCH')
-      }
+      const candidate = this.#candidate(state, input.candidateId, context)
       if (candidate.status !== 'pending') throw new Error(`memory candidate ${JSON.stringify(input.candidateId)} is already ${candidate.status}`)
       const timestamp = this.now().toISOString()
+      const assessment = this.#assessment(state, candidate, context, timestamp)
+      const conflicts = assessment.relationships.filter(item => item.relation === 'duplicate' || item.relation === 'conflict')
+      if (conflicts.length > 0 && input.resolution === undefined) {
+        throw new MemoryArchiveError(
+          'memory candidate approval requires an explicit conflict decision',
+          'MEMORY_CONFLICT_DECISION_REQUIRED',
+        )
+      }
+      let superseded: MemoryRecord | undefined
+      if (input.resolution?.kind === 'supersede') {
+        superseded = this.#target(state, input.resolution.memoryId, context)
+        if (superseded.status !== 'confirmed') throw new Error('memory supersession target must be active')
+        if (!conflicts.some(item => item.memoryId === superseded?.id)) {
+          throw new MemoryArchiveError('memory supersession target is not an assessed conflict', 'MEMORY_CONFLICT_TARGET_INVALID')
+        }
+      }
       const observation = this.#observation(context, 'governance-operation', input.sourceMessageId, timestamp)
       const approved: MemoryRecord = {
         schemaVersion: 2, id: this.createId(), ownerId: candidate.ownerId, scope: candidate.scope,
@@ -548,7 +617,9 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
         ...(candidate.validFrom === undefined ? {} : { validFrom: candidate.validFrom }),
         ...(candidate.validTo === undefined ? {} : { validTo: candidate.validTo }),
         content: candidate.content, visibility: candidate.visibility, sourceMessageId: input.sourceMessageId,
-        sourceCandidateId: candidate.id, status: 'confirmed',
+        sourceCandidateId: candidate.id,
+        ...(superseded === undefined ? {} : { supersedesMemoryId: superseded.id }),
+        status: 'confirmed',
       }
       const resolution: MemoryCandidateResolutionEvent = {
         schemaVersion: 2, event: 'candidate-resolution', id: this.createId(), createdAt: timestamp,
@@ -557,6 +628,7 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
         memoryId: approved.id,
       }
       candidate.status = 'approved'
+      if (superseded !== undefined) superseded.status = 'superseded'
       return { events: [observation, approved, resolution], result: approved }
     })
     for (const candidate of this.#candidateReferences.get(input.candidateId) ?? []) candidate.status = 'approved'
@@ -614,7 +686,12 @@ export async function openMemoryArchive(options: OpenMemoryArchiveOptions): Prom
     maxTransactionBytes: options.maxTransactionBytes,
     disposeTimeoutMs: options.disposeTimeoutMs,
   })
-  return new StorageBackedMemoryArchive(storage, options.createId ?? randomUUID, now)
+  return new StorageBackedMemoryArchive(
+    storage,
+    options.createId ?? randomUUID,
+    now,
+    options.conflictEvaluator ?? new DeterministicMemoryConflictEvaluator(),
+  )
 }
 
 function userText(message: UserMessage): string {
@@ -735,6 +812,7 @@ function ownerEligibility(ctx: Context): MemoryOwnerEligibility {
 const MEMORY_TOOL_NAMES = new Set([
   'memory_candidate_propose',
   'memory_candidate_list',
+  'memory_candidate_assess',
   'memory_candidate_approve',
   'memory_candidate_reject',
   'memory_list',
@@ -899,11 +977,76 @@ function registerMemoryTools(
   }))
 
   ctx.tools.register(defineTool({
-    name: 'memory_candidate_approve',
-    description: 'Approve one pending companion-memory proposal only after clear owner authorization. '
-      + 'Approval creates a confirmed memory that can participate in later recall.',
+    name: 'memory_candidate_assess',
+    description: 'Assess one pending candidate against active memories in the same trusted scope. '
+      + 'The result is explanatory only and never changes memory state.',
     parameters: {
       candidateId: { type: 'string', required: true, description: 'Exact candidate id returned by memory_candidate_list.' },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          assessment: {
+            type: 'object', required: true, additionalProperties: false,
+            properties: {
+              schemaVersion: { type: 'integer', required: true },
+              candidateId: { type: 'string', required: true },
+              evaluatedAt: { type: 'string', required: true },
+              relationships: {
+                type: 'array', required: true,
+                items: {
+                  type: 'object', additionalProperties: false,
+                  properties: {
+                    memoryId: { type: 'string', required: true },
+                    relation: { type: 'string', required: true, enum: ['duplicate', 'conflict', 'related'] },
+                    score: { type: 'number', required: true },
+                    reason: {
+                      type: 'string', required: true,
+                      enum: ['exact-normalized-match', 'same-kind-near-match', 'lexical-overlap'],
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, result) => [{
+        type: 'text',
+        text: result.assessment.relationships.length === 0
+          ? 'No active duplicate or conflict was detected.'
+          : `Found ${result.assessment.relationships.length} explainable memory relationship(s).`,
+      }],
+    },
+    execute(args, exec) {
+      const assessment = archive.assessCandidate({
+        context: toolContext(ctx, exec, channelDisclosure),
+        candidateId: args.candidateId,
+      })
+      return Promise.resolve({
+        assessment: { ...assessment, relationships: [...assessment.relationships] },
+      })
+    },
+    presentCall: args => ({ card: 'generic', title: 'Assess memory proposal', kind: 'search', rawInput: args }),
+  }))
+
+  ctx.tools.register(defineTool({
+    name: 'memory_candidate_approve',
+    description: 'Approve one pending companion-memory proposal only after clear owner authorization. '
+      + 'When assessment reports a duplicate or conflict, also supply the owner\'s keep-both or supersede decision.',
+    parameters: {
+      candidateId: { type: 'string', required: true, description: 'Exact candidate id returned by memory_candidate_list.' },
+      resolution: {
+        type: 'string',
+        enum: ['keep-both', 'supersede'],
+        description: 'Owner decision required when the candidate conflicts with an active memory.',
+      },
+      supersedesMemoryId: {
+        type: 'string',
+        description: 'Exact active memory id selected by the owner when resolution is supersede.',
+      },
     },
     output: {
       schema: {
@@ -914,11 +1057,22 @@ function registerMemoryTools(
       render: (_args, result) => [{ type: 'text', text: `Approved companion memory ${result.memory.id}.` }],
     },
     async execute(args, exec) {
+      if ((args.resolution === 'supersede') !== (args.supersedesMemoryId !== undefined)) {
+        throw new Error('supersede resolution requires exactly one supersedesMemoryId')
+      }
+      if (args.resolution === 'keep-both' && args.supersedesMemoryId !== undefined) {
+        throw new Error('keep-both resolution cannot select a supersession target')
+      }
       return {
         memory: await archive.approveCandidate({
           context: toolContext(ctx, exec, channelDisclosure),
           candidateId: args.candidateId,
           sourceMessageId: toolSourceMessageId(exec.callId, exec.agent?.id),
+          ...(args.resolution === undefined ? {} : {
+            resolution: args.resolution === 'keep-both'
+              ? { kind: 'keep-both' as const }
+              : { kind: 'supersede' as const, memoryId: args.supersedesMemoryId! },
+          }),
         }),
       }
     },
@@ -1060,6 +1214,7 @@ function memoryGovernanceService(
   }
   return {
     listCandidates: input => archive.listCandidates({ context, ...input }),
+    assessCandidate: input => archive.assessCandidate({ context, ...input }),
     approveCandidate: input => archive.approveCandidate({ context, ...input }),
     rejectCandidate: input => archive.rejectCandidate({ context, ...input }),
   }

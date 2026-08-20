@@ -5,6 +5,7 @@ import type {
   MemoryScopeV1,
 } from './domain.js'
 import type { CandidateExtractionReceiptV1, ExtractedMemoryDraftV1 } from './candidate-extraction.js'
+import type { MemoryConflictAssessmentV1 } from './conflict.js'
 
 /** Owner-governed visibility retained with every memory. */
 export type MemoryVisibility = 'personal' | 'confidential'
@@ -73,6 +74,14 @@ export interface MemoryCandidateProposal extends TrustedMemoryRequest {
 export interface MemoryCandidateDecision extends TrustedMemoryRequest {
   candidateId: string
   sourceMessageId: string
+  resolution?:
+    | { kind: 'keep-both' }
+    | { kind: 'supersede'; memoryId: string }
+}
+
+/** Request an explainable conflict view for one pending candidate. */
+export interface MemoryCandidateAssessment extends TrustedMemoryRequest {
+  candidateId: string
 }
 
 /** Query over the candidate review queue in one exact Owner/scope. */
@@ -148,6 +157,7 @@ export interface CompanionMemoryArchive {
   propose(input: MemoryCandidateProposal): Promise<MemoryCandidate>
   proposeExtracted(input: ExtractedMemoryCandidateBatch): Promise<MemoryCandidate[]>
   listCandidates(input: MemoryCandidateList): MemoryCandidate[]
+  assessCandidate(input: MemoryCandidateAssessment): MemoryConflictAssessmentV1
   approveCandidate(input: MemoryCandidateDecision): Promise<MemoryRecord>
   rejectCandidate(input: MemoryCandidateDecision): Promise<MemoryCandidate>
 }
@@ -155,6 +165,7 @@ export interface CompanionMemoryArchive {
 /** Context-free facade exposed only to the authenticated loopback settings transport. */
 export interface MemoryGovernanceService {
   listCandidates(input?: Omit<MemoryCandidateList, 'context'>): MemoryCandidate[]
+  assessCandidate(input: Omit<MemoryCandidateAssessment, 'context'>): MemoryConflictAssessmentV1
   approveCandidate(input: Omit<MemoryCandidateDecision, 'context'>): Promise<MemoryRecord>
   rejectCandidate(input: Omit<MemoryCandidateDecision, 'context'>): Promise<MemoryCandidate>
 }

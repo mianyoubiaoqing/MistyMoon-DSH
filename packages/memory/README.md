@@ -20,6 +20,8 @@ On Windows, Node can fsync archive and backup files but returns `EPERM` for dire
 
 Post-response candidate extraction now uses a single-active Provider registry. The Provider receives only authenticated Owner evidence selected from the completed top-level turn, returns strict untrusted drafts, and cannot access the Archive. Memory atomically records every source batch as pending with a provider receipt; failures are bounded and cannot fail the Owner turn. No extraction Provider is bundled or enabled by default. A future model-backed Adapter must run through a separately logged DSH Session and return its request/response receipt.
 
+Pending candidates can be assessed against active records through a deterministic, explainable conflict seam. Duplicate/conflict results never mutate governance state. Approval fails closed until the Owner chooses `keep-both` or selects an assessed active memory to supersede; supersession appends the confirmed replacement, candidate resolution, and old-version tombstone in one transaction.
+
 Current limitations:
 
 - The current `local-dsh-host-rpc` authority supports only the default loopback Web single-Owner deployment. Other channels remain fail-closed until they supply an authenticated authority adapter.

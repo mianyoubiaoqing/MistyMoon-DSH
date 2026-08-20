@@ -215,6 +215,8 @@ export class MemoryArchiveError extends Error {
       | 'MEMORY_LEASE_RELEASE_FAILED'
       | 'MEMORY_SOURCE_CONFLICT'
       | 'MEMORY_SCOPE_MISMATCH'
+      | 'MEMORY_CONFLICT_DECISION_REQUIRED'
+      | 'MEMORY_CONFLICT_TARGET_INVALID'
       | 'MEMORY_ARCHIVE_DISPOSED'
       | 'MEMORY_DISPOSE_TIMEOUT',
     options?: ErrorOptions,
@@ -726,8 +728,17 @@ function foldEvent(
     const candidate = state.candidateById.get(memory.sourceCandidateId)
     if (candidate === undefined || candidate.status !== 'pending' || candidate.ownerId !== memory.ownerId
       || !memoryScopeEquals(candidate.scope, memory.scope)) issue('invalid-state-transition', line, offset)
+    let targetMemoryId: string | undefined
+    if (memory.supersedesMemoryId !== undefined) {
+      const target = state.byId.get(memory.supersedesMemoryId)
+      if (target === undefined || target.status !== 'confirmed' || target.ownerId !== memory.ownerId
+        || !memoryScopeEquals(target.scope, memory.scope)) issue('invalid-state-transition', line, offset)
+      target.status = 'superseded'
+      targetMemoryId = target.id
+    }
     reserveSource(state, sourceKey, {
       kind: 'approve', transactionId, memoryId: memory.id, candidateId: candidate.id,
+      ...(targetMemoryId === undefined ? {} : { targetMemoryId }),
       content: memory.content, visibility: memory.visibility, memoryKind: memory.memoryKind,
       recordedAt: memory.recordedAt, validFrom: memory.validFrom, validTo: memory.validTo,
     }, line, offset)
