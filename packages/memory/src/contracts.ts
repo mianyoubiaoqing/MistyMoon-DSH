@@ -228,12 +228,36 @@ export interface MemoryRecall extends TrustedMemoryRequest {
   at?: string
 }
 
+export interface MemoryRetrievalRequestV1 extends MemoryRecall {
+  maxCharacters?: number
+}
+
+export interface MemoryRecallItemV1 {
+  memory: MemoryRecord
+  score: number
+  reasons: Array<{
+    providerId: string
+    providerVersion: string
+    reason: string
+    score: number
+  }>
+}
+
+/** Exact governed receipt used to build one model-visible memory projection. */
+export interface MemoryRecallSnapshotV1 {
+  schemaVersion: 1
+  query: string
+  createdAt: string
+  items: MemoryRecallItemV1[]
+}
+
 /** Small interface hiding parsing, scoped governance, ranking, and JSONL durability. */
 export interface CompanionMemoryArchive {
   inspection(): ArchiveInspection
   dispose(): Promise<void>
   observeExplicit(input: ExplicitMemoryObservation): Promise<MemoryRecord | undefined>
   recall(input: MemoryRecall): MemoryRecord[]
+  retrieve(input: MemoryRetrievalRequestV1): Promise<MemoryRecallSnapshotV1>
   list(input: MemoryList): MemoryRecord[]
   forget(input: MemoryForget): Promise<MemoryRecord>
   replace(input: MemoryReplace): Promise<MemoryRecord>

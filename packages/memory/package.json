@@ -27,6 +27,10 @@
       "types": "./lib/conflict.d.ts",
       "default": "./lib/conflict.js"
     },
+    "./retrieval": {
+      "types": "./lib/retrieval.d.ts",
+      "default": "./lib/retrieval.js"
+    },
     "./domain": {
       "types": "./lib/domain.d.ts",
       "default": "./lib/domain.js"

@@ -57,6 +57,10 @@
       "types": "./packages/memory/lib/conflict.d.ts",
       "default": "./packages/memory/lib/conflict.js"
     },
+    "./memory/retrieval": {
+      "types": "./packages/memory/lib/retrieval.d.ts",
+      "default": "./packages/memory/lib/retrieval.js"
+    },
     "./memory/legacy-migration": {
       "types": "./packages/memory/lib/legacy-migration.d.ts",
       "default": "./packages/memory/lib/legacy-migration.js"

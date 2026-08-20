@@ -14,7 +14,7 @@ The writer uses `proper-lockfile@4.1.2` as its MIT cross-process lease provider.
 
 This archive remains separate from DSH session persistence: DSH sessions are authoritative for conversations, while the Memory archive carries selected cross-session facts. Recall snapshots use `source.kind = plugin` and `plugin = mistymoon-memory`; the agent loop therefore persists the exact model-visible text as a native `user/message` before dispatch.
 
-Recall hard-filters confirmed state, exact Owner, authority, exact scope, current validity, and visibility before lexical ranking. Confidential data is eligible only when both the trusted channel policy is `owner-confidential` and the authenticated current request has explicit confidential-recall intent. Settings UI uses the Memory-owned loopback governance facade, so browser payloads cannot select or expand these fields.
+Recall hard-filters confirmed state, exact Owner, authority, exact scope, current validity, and visibility before any index Provider runs. Confidential data is eligible only when both the trusted channel policy is `owner-confidential` and the authenticated current request has explicit confidential-recall intent. The default local BM25 Provider returns IDs/scores/reasons only; Memory backchecks the authoritative Archive, applies result/character budgets, and persists memory/source/provider receipts in the exact DSH model-visible Recall Snapshot. Settings UI uses the Memory-owned loopback governance facade, so browser payloads cannot select or expand trusted fields.
 
 On Windows, Node can fsync archive and backup files but returns `EPERM` for directory-handle fsync. Maintenance therefore reports `directoryDurability: unsupported-platform` after file fsync, atomic rename, checkpoint publication, and full reopen verification. A sudden power loss during the narrow rename window may require restoring the exact backup; ordinary process failure and partial writes remain fail-closed.
 
@@ -30,5 +30,5 @@ Current limitations:
 
 - The current `local-dsh-host-rpc` authority supports only the default loopback Web single-Owner deployment. Other channels remain fail-closed until they supply an authenticated authority adapter.
 - The extraction seam and post-response consumer are active, but no local-model or remote Provider is bundled; candidates can still be proposed through the governed DSH tool.
-- Recall is lexical. Embeddings and reranking remain optional future adapters.
+- Recall defaults to local BM25. PageIndex, graph, embeddings, and reranking remain optional adapters and are not enabled by this baseline.
 - Imported batches do not yet have a rollback command. Individual imported memories remain forgettable through the normal append-only tool.

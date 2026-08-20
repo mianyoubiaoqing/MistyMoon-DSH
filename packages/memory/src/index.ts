@@ -31,8 +31,10 @@ import type {
   MemoryManagementSnapshotV1,
   MemoryList,
   MemoryRecall,
+  MemoryRecallSnapshotV1,
   MemoryRecord,
   MemoryReplace,
+  MemoryRetrievalRequestV1,
   MemorySourceViewRequestV1,
   MemorySourceViewV1,
   MemoryVisibility,
@@ -49,6 +51,7 @@ import {
   type MemoryConflictAssessmentV1,
   type MemoryConflictEvaluator,
 } from './conflict.js'
+import { bm25RecallHits, MemoryRetrievalEngine } from './retrieval.js'
 import {
   canDiscloseMemory,
   isMemoryCurrentlyValid,
@@ -74,6 +77,7 @@ import {
 export * from './contracts.js'
 export * from './candidate-extraction.js'
 export * from './conflict.js'
+export * from './retrieval.js'
 export * from './domain.js'
 export * from './runtime-settings.js'
 
@@ -144,29 +148,13 @@ export interface OpenMemoryArchiveOptions {
   disposeTimeoutMs?: number
   /** Optional pure evaluator seam used by deterministic contract tests and local adapters. */
   conflictEvaluator?: MemoryConflictEvaluator
+  /** Optional retrieval engine seam; defaults to local BM25 only. */
+  retrievalEngine?: MemoryRetrievalEngine
 }
 
 function explicitContent(text: string): string | undefined {
   const match = text.match(/(?:请|帮我)?记住[：:，,\s]*(.+)$/su)
   return match?.[1]?.trim() || undefined
-}
-
-function lexicalUnits(value: string): Set<string> {
-  const normalized = value.toLocaleLowerCase()
-  const units = new Set(normalized.match(/[a-z0-9]{2,}|[\p{Script=Han}]{2,}/gu) ?? [])
-  for (const sequence of normalized.match(/[\p{Script=Han}]{2,}/gu) ?? []) {
-    for (let index = 0; index < sequence.length - 1; index += 1) units.add(sequence.slice(index, index + 2))
-  }
-  return units
-}
-
-function lexicalScore(query: string, content: string): number {
-  const queryUnits = lexicalUnits(query)
-  if (queryUnits.size === 0) return 0
-  const contentUnits = lexicalUnits(content)
-  let overlap = 0
-  for (const unit of queryUnits) if (contentUnits.has(unit)) overlap += 1
-  return overlap / queryUnits.size
 }
 
 function conflict(sourceMessageId: string): never {
@@ -190,6 +178,7 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     private readonly createId: () => string,
     private readonly now: () => Date,
     private readonly conflictEvaluator: MemoryConflictEvaluator,
+    private readonly retrievalEngine: MemoryRetrievalEngine,
   ) {}
 
   inspection(): ArchiveInspection {
@@ -327,6 +316,17 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     })
   }
 
+  #eligibleRecords(
+    state: FoldedMemoryState,
+    context: MemoryAccessContextV1,
+    at: string,
+  ): MemoryRecord[] {
+    return state.records.filter(memory => memory.status === 'confirmed'
+      && this.#sameDomain(state, memory, context)
+      && isMemoryCurrentlyValid(memory, at)
+      && canDiscloseMemory(memory.visibility, context))
+  }
+
   recall(input: MemoryRecall): MemoryRecord[] {
     const context = this.#context(input.context)
     const state = this.storage.snapshot()
@@ -334,16 +334,25 @@ class StorageBackedMemoryArchive implements CompanionMemoryArchive {
     const limit = Math.max(0, input.limit ?? 8)
     const query = input.query.trim()
     const at = input.at ?? this.now().toISOString()
-    return state.records
-      .filter(memory => memory.status === 'confirmed'
-        && this.#sameDomain(state, memory, context)
-        && isMemoryCurrentlyValid(memory, at)
-        && canDiscloseMemory(memory.visibility, context))
-      .map(memory => ({ memory, score: query === '' ? 1 : lexicalScore(query, memory.content) }))
-      .filter(item => query === '' || item.score > 0)
-      .sort((left, right) => right.score - left.score || right.memory.createdAt.localeCompare(left.memory.createdAt))
+    const eligible = this.#eligibleRecords(state, context, at)
+    const byId = new Map(eligible.map(memory => [memory.id, memory]))
+    return bm25RecallHits(eligible, query)
+      .flatMap(hit => {
+        const memory = byId.get(hit.memoryId)
+        return memory === undefined ? [] : [{ memory, score: hit.score }]
+      })
+      .toSorted((left, right) => right.score - left.score || right.memory.createdAt.localeCompare(left.memory.createdAt))
       .slice(0, limit)
       .map(item => item.memory)
+  }
+
+  async retrieve(input: MemoryRetrievalRequestV1): Promise<MemoryRecallSnapshotV1> {
+    const context = this.#context(input.context)
+    const state = this.storage.snapshot()
+    const createdAt = this.now().toISOString()
+    if (state === undefined) return { schemaVersion: 1, query: input.query, createdAt, items: [] }
+    const eligible = this.#eligibleRecords(state, context, input.at ?? createdAt)
+    return this.retrievalEngine.retrieve(eligible, input, createdAt)
   }
 
   list(input: MemoryList): MemoryRecord[] {
@@ -913,6 +922,7 @@ export async function openMemoryArchive(options: OpenMemoryArchiveOptions): Prom
     options.createId ?? randomUUID,
     now,
     options.conflictEvaluator ?? new DeterministicMemoryConflictEvaluator(),
+    options.retrievalEngine ?? new MemoryRetrievalEngine(),
   )
 }
 
@@ -920,10 +930,13 @@ function userText(message: UserMessage): string {
   return message.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('\n').trim()
 }
 
-function recallSnapshot(memories: readonly MemoryRecord[]): string {
+function recallSnapshot(snapshot: MemoryRecallSnapshotV1): string {
   return 'Relevant confirmed companion memories. Use them only when relevant; '
     + 'do not reveal confidential details without owner intent:\n'
-    + memories.map(memory => `- ${memory.content}`).join('\n')
+    + snapshot.items.map(({ memory, reasons }) => {
+      const receipt = reasons.map(reason => `${reason.providerId}:${reason.reason}`).join(',')
+      return `- [memory:${memory.id}; source:${memory.sourceMessageId}; reason:${receipt}] ${memory.content}`
+    }).join('\n')
 }
 
 const memoryValueSchema = {
@@ -1518,9 +1531,9 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
       const effectiveRecallLimit = config.settingsPath === undefined
         ? recallLimit
         : (await loadMemoryRuntimeSettings(config.settingsPath, recallLimit)).recallLimit
-      const memories = archive.recall({ context, query, limit: effectiveRecallLimit })
-      if (memories.length === 0) return decision
-      const text = recallSnapshot(memories)
+      const snapshot = await archive.retrieve({ context, query, limit: effectiveRecallLimit })
+      if (snapshot.items.length === 0) return decision
+      const text = recallSnapshot(snapshot)
       return {
         kind: 'enter',
         messages: [

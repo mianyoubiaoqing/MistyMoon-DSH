@@ -124,10 +124,18 @@ describe('MistyMoon memory plugin', () => {
     )
     expect(projection?.type).toBe('user/message')
     if (projection?.type !== 'user/message') throw new Error('memory projection was not logged')
+    const recalled = ctx.mistymoonMemory.recall({
+      context: PERSONAL_COMPANION_ACCESS,
+      query: '凤凰单丛',
+      limit: 1,
+    })[0]
+    if (recalled === undefined) throw new Error('recalled fixture memory missing')
     expect(projection.data.content).toEqual([{
       type: 'text',
       text: 'Relevant confirmed companion memories. Use them only when relevant; '
-        + 'do not reveal confidential details without owner intent:\n- 我平时喜欢凤凰单丛。',
+        + 'do not reveal confidential details without owner intent:\n'
+        + `- [memory:${recalled.id}; source:${recalled.sourceMessageId}; reason:mistymoon-bm25:bm25-term-match] `
+        + '我平时喜欢凤凰单丛。',
     }])
     expect(projection.data.source).toMatchObject({
       kind: 'plugin',
