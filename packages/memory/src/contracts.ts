@@ -249,6 +249,15 @@ export interface MemoryRecallSnapshotV1 {
   query: string
   createdAt: string
   items: MemoryRecallItemV1[]
+  shadowComparisons?: Array<{
+    providerId: string
+    providerVersion: string
+    capability: 'page-index' | 'graph-relations'
+    status: 'completed' | 'failed' | 'timed-out'
+    latencyMs: number
+    overlapAtK: number
+    returnedMemoryIds: string[]
+  }>
 }
 
 /** Small interface hiding parsing, scoped governance, ranking, and JSONL durability. */

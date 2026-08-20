@@ -32,6 +32,19 @@ export interface RecallIndexProvider {
   query(request: RecallIndexRequestV1, signal: AbortSignal): Promise<unknown> | unknown
 }
 
+export interface AdvancedRecallProviderPlanV1 {
+  readonly provider: RecallIndexProvider
+  readonly capability: 'page-index' | 'graph-relations'
+  readonly mode: 'shadow' | 'opt-in'
+  readonly timeoutMs: number
+  readonly weight: number
+}
+
+/** Dynamic, policy-owning source implemented by the optional advanced registry. */
+export interface AdvancedRecallProviderSource {
+  plans(): readonly AdvancedRecallProviderPlanV1[]
+}
+
 function tokens(value: string): string[] {
   const normalized = value.toLocaleLowerCase()
   const result: string[] = [...(normalized.match(/[a-z0-9]{2,}/gu) ?? [])]
@@ -113,9 +126,14 @@ function parseHits(value: unknown, allowed: ReadonlySet<string>): RecallIndexHit
 /** Provider fusion plus authoritative ID backcheck and final projection budgeting. */
 export class MemoryRetrievalEngine {
   readonly #providers: readonly RecallIndexProvider[]
+  readonly #advancedProviderSource: AdvancedRecallProviderSource | undefined
 
-  constructor(options: { readonly additionalProviders?: readonly RecallIndexProvider[] } = {}) {
+  constructor(options: {
+    readonly additionalProviders?: readonly RecallIndexProvider[]
+    readonly advancedProviderSource?: AdvancedRecallProviderSource
+  } = {}) {
     this.#providers = [new Bm25RecallIndexProvider(), ...(options.additionalProviders ?? [])]
+    this.#advancedProviderSource = options.advancedProviderSource
     const identities = new Set<string>()
     for (const provider of this.#providers) {
       if (provider.id.trim() === '' || provider.version.trim() === '') throw new TypeError('recall Provider identity must be non-empty')
@@ -145,22 +163,69 @@ export class MemoryRetrievalEngine {
     }))
     const request: RecallIndexRequestV1 = { schemaVersion: 1, query: input.query, records: projection }
     const allowed = new Set(records.map(record => record.id))
-    const settled = await Promise.allSettled(this.#providers.map(async provider => ({
-      provider,
-      hits: parseHits(await provider.query(request, signal), allowed),
-    })))
+    const advanced = this.#advancedProviderSource?.plans() ?? []
+    const executions = [
+      ...this.#providers.map(provider => ({
+        provider,
+        mode: 'opt-in' as const,
+        capability: undefined,
+        timeoutMs: undefined,
+        weight: 1,
+      })),
+      ...advanced,
+    ]
+    const settled = await Promise.all(executions.map(async execution => {
+      const started = performance.now()
+      const controller = new AbortController()
+      const forwardAbort = (): void => controller.abort(signal.reason)
+      if (signal.aborted) controller.abort(signal.reason)
+      else signal.addEventListener('abort', forwardAbort, { once: true })
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let timedOut = false
+      const timeout = execution.timeoutMs === undefined
+        ? undefined
+        : new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => {
+              timedOut = true
+              const error = new Error(`recall Provider timed out after ${execution.timeoutMs}ms`)
+              controller.abort(error)
+              reject(error)
+            }, execution.timeoutMs)
+            timer.unref?.()
+          })
+      try {
+        const call = Promise.resolve(execution.provider.query(request, controller.signal))
+        const value = timeout === undefined ? await call : await Promise.race([call, timeout])
+        return {
+          ...execution,
+          status: 'completed' as const,
+          latencyMs: performance.now() - started,
+          hits: parseHits(value, allowed),
+        }
+      } catch {
+        return {
+          ...execution,
+          status: (timedOut ? 'timed-out' : 'failed') as 'timed-out' | 'failed',
+          latencyMs: performance.now() - started,
+          hits: [] as RecallIndexHitV1[],
+        }
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+        signal.removeEventListener('abort', forwardAbort)
+      }
+    }))
     const fused = new Map<string, {
       score: number
       reasons: MemoryRecallSnapshotV1['items'][number]['reasons']
     }>()
     for (const result of settled) {
-      if (result.status === 'rejected') continue
-      for (const hit of result.value.hits) {
+      if (result.status !== 'completed' || result.mode === 'shadow') continue
+      for (const hit of result.hits) {
         const current = fused.get(hit.memoryId) ?? { score: 0, reasons: [] }
-        current.score += hit.score
+        current.score += hit.score * result.weight
         current.reasons.push({
-          providerId: result.value.provider.id,
-          providerVersion: result.value.provider.version,
+          providerId: result.provider.id,
+          providerVersion: result.provider.version,
           reason: hit.reason,
           score: hit.score,
         })
@@ -182,7 +247,30 @@ export class MemoryRetrievalEngine {
       usedCharacters += item.memory.content.length
       items.push({ memory: item.memory, score: item.score, reasons: item.reasons })
     }
-    return { schemaVersion: 1, query: input.query, createdAt, items }
+    const baseline = new Set(
+      settled.find(result => result.provider.id === 'mistymoon-bm25')?.hits.slice(0, limit).map(hit => hit.memoryId) ?? [],
+    )
+    const shadowComparisons = settled.flatMap(result => {
+      if (result.mode !== 'shadow' || result.capability === undefined) return []
+      const returnedMemoryIds = result.hits.slice(0, limit).map(hit => hit.memoryId)
+      const overlap = returnedMemoryIds.filter(id => baseline.has(id)).length
+      return [{
+        providerId: result.provider.id,
+        providerVersion: result.provider.version,
+        capability: result.capability,
+        status: result.status,
+        latencyMs: result.latencyMs,
+        overlapAtK: returnedMemoryIds.length === 0 ? 0 : overlap / returnedMemoryIds.length,
+        returnedMemoryIds,
+      }]
+    })
+    return {
+      schemaVersion: 1,
+      query: input.query,
+      createdAt,
+      items,
+      ...(shadowComparisons.length === 0 ? {} : { shadowComparisons }),
+    }
   }
 }
 

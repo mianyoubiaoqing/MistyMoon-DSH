@@ -37,7 +37,7 @@ README 剩余 P0 同时包含自动写入、冲突治理、存储格式、管理
 | E | `007-memory-candidate-governance`（已完成） | 候选编辑、合并和不含敏感载荷的操作审计 | A、D | 完整搜索页、召回算法 |
 | F | `008-memory-management-ui`（已完成） | 搜索、筛选、批量审核和来源查看的专用页面 | A、B、D、E | 直接文件访问、业务规则复制 |
 | G | `009-memory-retrieval-seam`（已完成） | 可解释的 Retrieval Service Definition、内置词法/BM25 Provider 与 Consumer | A、B、D | PageIndex/图引擎强制依赖 |
-| H | `010-memory-advanced-retrieval` | 可选 PageIndex/图关系融合 Adapter 和 shadow 对比 | G | 改变治理事实来源、自动启用外部 Provider |
+| H | `010-memory-advanced-retrieval`（已完成） | 可选 PageIndex/图关系融合 Adapter 和 shadow 对比 | G | 改变治理事实来源、自动启用外部 Provider |
 | I | `017-memory-lifecycle` | 整合、衰减、归档与恢复 | A、B、D、G | 永久物理删除、无人确认的事实改写 |
 
 `011`–`016` 已被 RP/Work/Identity 规范占用，因此 Lifecycle 使用 `017`。若实施时编号又被占用，使用当时下一个未占用编号并同步本表。A–I 的普通、可回滚本地实现均受本页状态所述授权覆盖；高风险排除项仍须单独确认。

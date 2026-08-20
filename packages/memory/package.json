@@ -31,6 +31,10 @@
       "types": "./lib/retrieval.d.ts",
       "default": "./lib/retrieval.js"
     },
+    "./advanced-retrieval": {
+      "types": "./lib/advanced-retrieval.d.ts",
+      "default": "./lib/advanced-retrieval.js"
+    },
     "./domain": {
       "types": "./lib/domain.d.ts",
       "default": "./lib/domain.js"

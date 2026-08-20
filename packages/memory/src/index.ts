@@ -45,6 +45,7 @@ import {
   extractMemoryCandidates,
   type CandidateExtractionRequestV1,
 } from './candidate-extraction.js'
+import { AdvancedRetrievalRegistry } from './advanced-retrieval.js'
 import {
   DeterministicMemoryConflictEvaluator,
   parseMemoryConflictRelationships,
@@ -78,6 +79,7 @@ export * from './contracts.js'
 export * from './candidate-extraction.js'
 export * from './conflict.js'
 export * from './retrieval.js'
+export * from './advanced-retrieval.js'
 export * from './domain.js'
 export * from './runtime-settings.js'
 
@@ -133,6 +135,8 @@ declare module '@deepseek-ai/cordis' {
     mistymoonMemoryGovernance: MemoryGovernanceService
     /** Optional post-response extraction Provider registry; zero providers is the safe default. */
     mistymoonMemoryCandidateExtraction: CandidateExtractionRegistry
+    /** Optional advanced retrieval registry; all newly registered Adapters remain disabled. */
+    mistymoonMemoryAdvancedRetrieval: AdvancedRetrievalRegistry
   }
 }
 
@@ -1478,6 +1482,7 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
   if (maxTransactionBytes > maxArchiveBytes) {
     throw new TypeError('mistymoon-memory: maxTransactionBytes must not exceed maxArchiveBytes')
   }
+  const advancedRetrieval = new AdvancedRetrievalRegistry()
   const archive = await openMemoryArchive({
     path: config.path,
     leaseTimeoutMs: config.leaseTimeoutMs ?? 30_000,
@@ -1485,12 +1490,17 @@ export async function apply(ctx: Context, config: Config): Promise<void> {
     disposeTimeoutMs: config.disposeTimeoutMs ?? 5_000,
     maxArchiveBytes,
     maxTransactionBytes,
+    retrievalEngine: new MemoryRetrievalEngine({ advancedProviderSource: advancedRetrieval }),
   })
   const extraction = new CandidateExtractionRegistry()
   ctx.effect(() => ctx.provide('mistymoonMemory', archive), 'mistymoon-memory: shared archive')
   ctx.effect(
     () => ctx.provide('mistymoonMemoryCandidateExtraction', extraction),
     'mistymoon-memory: candidate extraction Provider registry',
+  )
+  ctx.effect(
+    () => ctx.provide('mistymoonMemoryAdvancedRetrieval', advancedRetrieval),
+    'mistymoon-memory: advanced retrieval Provider registry',
   )
   ctx.effect(
     () => ctx.provide('mistymoonMemoryGovernance', memoryGovernanceService(ownerEligibility(ctx), archive)),

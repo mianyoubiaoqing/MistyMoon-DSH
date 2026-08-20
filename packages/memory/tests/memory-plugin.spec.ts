@@ -96,6 +96,7 @@ describe('MistyMoon memory plugin', () => {
     await ctx.plugin(MemoryPlugin, { path: join(root, 'memory.jsonl'), recallLimit: 4 })
     expect(ctx.mistymoonMemory).toBeDefined()
     expect(ctx.mistymoonMemoryGovernance).toBeDefined()
+    expect(ctx.mistymoonMemoryAdvancedRetrieval.plans()).toEqual([])
     const session = Session.create(SessionId('memory-session'))
     const agent = sessionAgent(session)
     const remember = createUserMessage({
